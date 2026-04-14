@@ -12,6 +12,11 @@ export interface KnowledgeItem {
   related_to?: string[];
   supersedes?: string;
   superseded_by?: string;
+  duplicate_of?: string | null;
+  is_stale?: boolean;
+  stale_after_days?: number;
+  stale_at?: string;
+  effective_confidence?: "high" | "medium" | "low";
   created_at: string;
   updated_at?: string;
 }
@@ -25,5 +30,10 @@ export interface KnowledgeListItem {
   owner: string;
   project: string;
   module?: string;
+  duplicate_of?: string | null;
+  is_stale?: boolean;
+  stale_after_days?: number;
+  stale_at?: string;
+  effective_confidence?: "high" | "medium" | "low";
   created_at: string;
 }
