@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
 
-interface DuplicateCandidate {
+export interface DuplicateCandidate {
   id: string;
   claim: string;
   project: string;
+  similarity?: number;
 }
 
 interface DuplicateLinkRow {
@@ -17,6 +18,11 @@ interface DuplicateLinkRow {
 
 export function normalizeClaimForDuplicateMatch(claim: string): string {
   return claim.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function semanticPersistThreshold(): number {
+  const raw = Number.parseFloat(process.env.TEAM_MEMORY_DUPLICATE_PERSIST_THRESHOLD ?? "0.95");
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.95;
 }
 
 function isExactDuplicateMatch(
@@ -37,10 +43,15 @@ export function findPersistedDuplicateOf(
   project: string,
   candidates: DuplicateCandidate[],
 ): string | null {
-  const match = candidates.find((candidate) =>
+  const exactMatch = candidates.find((candidate) =>
     isExactDuplicateMatch(claim, project, candidate.claim, candidate.project),
   );
-  return match?.id ?? null;
+  if (exactMatch) {
+    return exactMatch.id;
+  }
+
+  const semanticMatch = candidates.find((candidate) => (candidate.similarity ?? 0) >= semanticPersistThreshold());
+  return semanticMatch?.id ?? null;
 }
 
 export function cleanupFalsePositiveDuplicateOf(db: Database.Database): number {
