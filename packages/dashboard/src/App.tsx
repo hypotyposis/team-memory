@@ -22,6 +22,7 @@ function App() {
   const [projects, setProjects] = useState<string[]>([]);
   const [owners, setOwners] = useState<string[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  const [searchMode, setSearchMode] = useState<"fts" | "semantic" | "hybrid" | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey() ?? "");
 
@@ -48,6 +49,7 @@ function App() {
     }
     setItems(result.items);
     setTotal(result.total);
+    setSearchMode(result.search_mode ?? null);
   }, [query, filterProject, filterOwner, filterTag]);
 
   useEffect(() => {
@@ -152,6 +154,11 @@ function App() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            {searchMode && query.trim() && (
+              <span className={`search-mode-badge ${searchMode}`}>
+                {searchMode}
+              </span>
+            )}
             {hasFilters && (
               <button className="filter-btn" onClick={clearFilters}>
                 Clear
@@ -191,6 +198,9 @@ function App() {
                     <span className={`confidence ${item.effective_confidence ?? item.confidence}`}>
                       {item.effective_confidence ?? item.confidence}
                     </span>
+                    {item.similarity != null && (
+                      <span className="similarity">{Math.round(item.similarity * 100)}% match</span>
+                    )}
                     <span>{item.project}</span>
                     {item.module && <span>/ {item.module}</span>}
                     <span>by {item.owner}</span>
