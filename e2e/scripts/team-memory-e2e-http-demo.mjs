@@ -1,4 +1,5 @@
 const baseUrl = process.env.TEAM_MEMORY_BASE_URL || "http://localhost:3456/api";
+const apiKey = process.env.TEAM_MEMORY_API_KEY;
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -30,6 +31,10 @@ async function requestJson(url, options = {}) {
 }
 
 async function main() {
+  if (!apiKey) {
+    fail("TEAM_MEMORY_API_KEY is required for authenticated publish");
+  }
+
   const payload = {
     claim: "infer-monorepo's primary architecture axis is DEPLOY_MODE rather than folder structure.",
     detail:
@@ -43,7 +48,6 @@ async function main() {
     tags: ["architecture", "deploy-mode"],
     confidence: "high",
     staleness_hint: "Recheck if deploy-mode logic or package boundaries change.",
-    owner: "AgentA",
     related_to: [],
   };
 
@@ -51,6 +55,9 @@ async function main() {
 
   const created = await requestJson(`${baseUrl}/knowledge`, {
     method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify(payload),
   });
 
@@ -91,6 +98,9 @@ async function main() {
     "updated_at",
   ]) {
     if (!(field in full)) fail(`full item missing field ${field}`);
+  }
+  for (const field of ["is_stale", "stale_after_days", "stale_at", "effective_confidence"]) {
+    if (!(field in full)) fail(`full item missing quality field ${field}`);
   }
 
   if (!Array.isArray(full.source) || full.source.length === 0) {

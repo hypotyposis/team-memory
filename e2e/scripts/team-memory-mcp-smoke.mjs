@@ -1,5 +1,5 @@
-import { Client } from "../team-memory-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
-import { StdioClientTransport } from "../team-memory-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js";
+import { Client } from "../../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
+import { StdioClientTransport } from "../../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js";
 
 function getText(result) {
   const first = result.content?.find((item) => item.type === "text");
@@ -13,6 +13,10 @@ function fail(message) {
 
 async function main() {
   const backendUrl = process.env.TEAM_MEMORY_URL || "http://localhost:3456";
+  const apiKey = process.env.TEAM_MEMORY_API_KEY;
+  if (!apiKey) {
+    fail("TEAM_MEMORY_API_KEY is required for authenticated MCP smoke tests");
+  }
   const client = new Client(
     { name: "team-memory-e2e-smoke", version: "0.1.0" },
     { capabilities: {} },
@@ -21,10 +25,11 @@ async function main() {
   const transport = new StdioClientTransport({
     command: "node",
     args: ["dist/index.js"],
-    cwd: new URL("../team-memory-mcp/", import.meta.url).pathname,
+    cwd: new URL("../../packages/mcp-server/", import.meta.url).pathname,
     env: {
       ...process.env,
       TEAM_MEMORY_URL: backendUrl,
+      TEAM_MEMORY_API_KEY: apiKey,
     },
     stderr: "pipe",
   });

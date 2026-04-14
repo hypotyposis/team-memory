@@ -5,6 +5,17 @@ const DB_PATH = process.env.TEAM_MEMORY_DB ?? path.join(process.cwd(), "team-mem
 
 let _db: Database.Database | null = null;
 
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
+}
+
+function ensureColumn(db: Database.Database, table: string, column: string, definition: string): void {
+  if (!hasColumn(db, table, column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -34,6 +45,7 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project);
     CREATE INDEX IF NOT EXISTS idx_knowledge_owner ON knowledge(owner);
     CREATE INDEX IF NOT EXISTS idx_knowledge_created ON knowledge(created_at);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_superseded_by ON knowledge(superseded_by);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
       claim, detail, tags,
@@ -56,7 +68,20 @@ export function getDb(): Database.Database {
       INSERT INTO knowledge_fts(rowid, claim, detail, tags)
       VALUES (new.rowid, new.claim, new.detail, new.tags);
     END;
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      key         TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      revoked_at  TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
   `);
+
+  ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
+  _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
 
   return _db;
 }
