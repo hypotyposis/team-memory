@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Backend
+      - name: Install backend dependencies
+        working-directory: packages/backend
+        run: npm install
+
+      - name: Build backend
+        working-directory: packages/backend
+        run: npm run build
+
+      # MCP Server
+      - name: Install MCP server dependencies
+        working-directory: packages/mcp-server
+        run: npm install
+
+      - name: Build MCP server
+        working-directory: packages/mcp-server
+        run: npm run build
+
+      # Dashboard
+      - name: Install dashboard dependencies
+        working-directory: packages/dashboard
+        run: npm install
+
+      - name: Lint dashboard
+        working-directory: packages/dashboard
+        run: npm run lint
+
+      - name: Build dashboard
+        working-directory: packages/dashboard
+        run: npm run build
+
+      # E2E
+      - name: Start backend for E2E
+        working-directory: packages/backend
+        run: node dist/index.js &
+        env:
+          PORT: 3456
+
+      - name: Wait for backend
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:3456/health > /dev/null 2>&1; then
+              echo "Backend ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Backend failed to start"
+          exit 1
+
+      - name: Run E2E HTTP tests
+        working-directory: e2e/scripts
+        run: node team-memory-e2e-http-demo.mjs
+        env:
+          TEAM_MEMORY_BASE_URL: http://localhost:3456/api

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { KnowledgeItem, KnowledgeListItem } from "./types";
 import {
   listKnowledge,
@@ -29,11 +29,7 @@ function App() {
     });
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [query, filterProject, filterOwner, filterTag]);
-
-  async function load() {
+  const load = useCallback(async () => {
     const params = {
       project: filterProject ?? undefined,
       owner: filterOwner ?? undefined,
@@ -48,7 +44,11 @@ function App() {
     }
     setItems(result.items);
     setTotal(result.total);
-  }
+  }, [query, filterProject, filterOwner, filterTag]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   async function selectItem(id: string) {
     const item = await getKnowledge(id);
