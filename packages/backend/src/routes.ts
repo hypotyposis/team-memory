@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { v4 as uuidv4 } from "uuid";
+import { requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
+import { detectPossibleDuplicates, qualityFlagsFromRow } from "./quality.js";
 
 const api = new Hono();
 
@@ -8,7 +10,7 @@ interface KnowledgeRow {
   id: string; claim: string; detail: string | null; source: string;
   project: string; module: string | null; tags: string; confidence: string;
   staleness_hint: string; owner: string; related_to: string;
-  supersedes: string | null; superseded_by: string | null;
+  supersedes: string | null; superseded_by: string | null; duplicate_of: string | null;
   created_at: string; updated_at: string;
 }
 
@@ -19,8 +21,9 @@ function rowToJson(row: KnowledgeRow) {
     tags: JSON.parse(row.tags), confidence: row.confidence,
     staleness_hint: row.staleness_hint, owner: row.owner,
     related_to: JSON.parse(row.related_to), supersedes: row.supersedes,
-    superseded_by: row.superseded_by, created_at: row.created_at,
-    updated_at: row.updated_at,
+    superseded_by: row.superseded_by, duplicate_of: row.duplicate_of,
+    created_at: row.created_at, updated_at: row.updated_at,
+    ...qualityFlagsFromRow(row),
   };
 }
 
@@ -29,7 +32,8 @@ function summaryFromRow(row: KnowledgeRow) {
     id: row.id, claim: row.claim, project: row.project, module: row.module,
     tags: JSON.parse(row.tags), confidence: row.confidence,
     staleness_hint: row.staleness_hint, owner: row.owner,
-    created_at: row.created_at,
+    duplicate_of: row.duplicate_of, created_at: row.created_at,
+    ...qualityFlagsFromRow(row),
   };
 }
 
@@ -37,19 +41,24 @@ const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
 
 // 1. POST /api/knowledge
 api.post("/knowledge", async (c) => {
+  const auth = requireApiAuth(c);
+  if (auth instanceof Response) return auth;
+
   const body = await c.req.json();
   const missing: string[] = [];
-  for (const f of ["claim", "source", "project", "tags", "confidence", "staleness_hint", "owner"]) {
+  for (const f of ["claim", "source", "project", "tags", "confidence", "staleness_hint"]) {
     if (body[f] === undefined || body[f] === null || body[f] === "") missing.push(f);
   }
   if (missing.length > 0) return c.json({ error: `Missing required fields: ${missing.join(", ")}` }, 400);
   if (!Array.isArray(body.source) || body.source.length === 0) return c.json({ error: "source must be a non-empty array of strings" }, 400);
-  if (!Array.isArray(body.tags)) return c.json({ error: "tags must be an array of strings" }, 400);
+  if (!Array.isArray(body.tags) || body.tags.length === 0) return c.json({ error: "tags must be a non-empty array of strings" }, 400);
   if (!VALID_CONFIDENCE.has(body.confidence)) return c.json({ error: "confidence must be one of: high, medium, low" }, 400);
 
   const db = getDb();
   const id = uuidv4();
   const now = new Date().toISOString();
+  const duplicates = detectPossibleDuplicates(db, { claim: body.claim, project: body.project });
+  const duplicateOf = duplicates[0]?.id ?? null;
 
   if (body.supersedes) {
     const old = db.prepare("SELECT id, superseded_by FROM knowledge WHERE id = ?").get(body.supersedes) as { id: string; superseded_by: string | null } | undefined;
@@ -64,16 +73,24 @@ api.post("/knowledge", async (c) => {
     }
   }
 
-  const insert = db.prepare(`INSERT INTO knowledge (id, claim, detail, source, project, module, tags, confidence, staleness_hint, owner, related_to, supersedes, superseded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`);
+  const insert = db.prepare(`INSERT INTO knowledge (id, claim, detail, source, project, module, tags, confidence, staleness_hint, owner, related_to, supersedes, superseded_by, duplicate_of, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`);
   const updateSuperseded = db.prepare("UPDATE knowledge SET superseded_by = ? WHERE id = ?");
 
   db.transaction(() => {
-    insert.run(id, body.claim, body.detail ?? null, JSON.stringify(body.source), body.project, body.module ?? null, JSON.stringify(body.tags), body.confidence, body.staleness_hint, body.owner, JSON.stringify(body.related_to ?? []), body.supersedes ?? null, now, now);
+    insert.run(id, body.claim, body.detail ?? null, JSON.stringify(body.source), body.project, body.module ?? null, JSON.stringify(body.tags), body.confidence, body.staleness_hint, auth.owner, JSON.stringify(body.related_to ?? []), body.supersedes ?? null, duplicateOf, now, now);
     if (body.supersedes) updateSuperseded.run(id, body.supersedes);
   })();
 
   const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(id) as KnowledgeRow;
-  return c.json(rowToJson(row), 201);
+  const responseBody = rowToJson(row);
+  const warnings = duplicates.length > 0
+    ? [{
+        code: "possible_duplicate",
+        message: `Found ${duplicates.length} possible duplicate knowledge item(s) in project ${body.project}`,
+        matches: duplicates,
+      }]
+    : [];
+  return c.json({ ...responseBody, warnings }, 201);
 });
 
 // 2. GET /api/knowledge/search
@@ -144,6 +161,8 @@ api.patch("/knowledge/:id", async (c) => {
   const db = getDb();
   const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(id) as KnowledgeRow | undefined;
   if (!row) return c.json({ error: "Knowledge item not found" }, 404);
+  const auth = requireOwnerAccess(c, row.owner);
+  if (auth instanceof Response) return auth;
   const immutable = ["claim", "detail", "source", "project", "module", "owner"];
   const attempted = immutable.filter((f) => body[f] !== undefined);
   if (attempted.length > 0) return c.json({ error: `Cannot modify immutable fields: ${attempted.join(", ")}` }, 400);
