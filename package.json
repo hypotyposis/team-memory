@@ -24,10 +24,10 @@
       "eslint --fix"
     ],
     "packages/backend/**/*.ts": [
-      "npx tsc --noEmit -p packages/backend/tsconfig.json"
+      "bash -c 'npx tsc --noEmit -p packages/backend/tsconfig.json'"
     ],
     "packages/mcp-server/**/*.ts": [
-      "npx tsc --noEmit -p packages/mcp-server/tsconfig.json"
+      "bash -c 'npx tsc --noEmit -p packages/mcp-server/tsconfig.json'"
     ]
   }
 }
