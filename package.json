@@ -12,6 +12,22 @@
     "dev:dashboard": "npm run dev --workspace=packages/dashboard",
     "dev:mcp": "npm run dev --workspace=packages/mcp-server",
     "build": "npm run build --workspace=packages/backend && npm run build --workspace=packages/mcp-server && npm run build --workspace=packages/dashboard",
-    "lint": "npm run lint --workspace=packages/dashboard"
+    "lint": "npm run lint --workspace=packages/dashboard",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0"
+  },
+  "lint-staged": {
+    "packages/dashboard/**/*.{ts,tsx}": [
+      "eslint --fix"
+    ],
+    "packages/backend/**/*.ts": [
+      "npx tsc --noEmit -p packages/backend/tsconfig.json"
+    ],
+    "packages/mcp-server/**/*.ts": [
+      "npx tsc --noEmit -p packages/mcp-server/tsconfig.json"
+    ]
   }
 }
