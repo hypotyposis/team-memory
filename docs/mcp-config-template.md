@@ -65,6 +65,7 @@ Once connected, your agent will have access to:
 |------|---------|
 | `publish_knowledge` | Share a finding with the team |
 | `query_knowledge` | Search knowledge by keywords (FTS5) |
+| `semantic_search` | Search knowledge by meaning using vector similarity — finds conceptually related items even when exact words differ |
 | `list_knowledge` | Browse knowledge by project/tags |
 | `get_knowledge` | Read full detail of a knowledge item |
 | `update_knowledge` | Update metadata (tags, confidence, staleness, related_to) |
