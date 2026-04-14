@@ -88,11 +88,11 @@ The model is intentionally small: publish, browse/search, inspect, and update me
 
 ### Prerequisites
 
-- Node.js 22+ recommended
+- **Node.js 22** (pinned in `.nvmrc`). Run `nvm use` to switch automatically.
 - `npm`
 - macOS/Linux environment where `better-sqlite3` can build native deps
 
-There is no repo-root workspace script yet. Install and run each package from its own directory.
+> **Node version matters:** `better-sqlite3` compiles native bindings tied to a specific Node ABI. If you install with one Node major version and run with another, you'll get an ABI mismatch crash. Use the same Node version for both `npm install` and runtime.
 
 ### 1. Start the backend
 
