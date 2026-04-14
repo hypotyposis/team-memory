@@ -83,6 +83,7 @@ export function getDb(): Database.Database {
 
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
+  ensureColumn(_db, "knowledge", "embedding", "BLOB");
   cleanupFalsePositiveDuplicateOf(_db);
 
   return _db;

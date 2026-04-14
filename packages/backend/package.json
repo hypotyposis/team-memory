@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "keys": "tsx src/cli.ts",
+    "embeddings:backfill": "tsx src/backfill-embeddings.ts",
     "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
