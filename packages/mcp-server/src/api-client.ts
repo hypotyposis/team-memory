@@ -42,7 +42,7 @@ export interface PublishInput {
   tags: string[];
   confidence: "high" | "medium" | "low";
   staleness_hint: string;
-  owner: string;
+  owner?: string;
   related_to?: string[];
   supersedes?: string;
 }
@@ -71,15 +71,25 @@ export interface UpdateInput {
 
 export class ApiClient {
   private baseUrl: string;
+  private apiKey?: string;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, apiKey?: string) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.apiKey = apiKey;
+  }
+
+  private writeHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+    return headers;
   }
 
   async publish(input: PublishInput): Promise<KnowledgeItem> {
     const res = await fetch(`${this.baseUrl}/api/knowledge`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.writeHeaders(),
       body: JSON.stringify(input),
     });
     if (!res.ok) {
@@ -138,7 +148,7 @@ export class ApiClient {
     const { id, ...fields } = input;
     const res = await fetch(`${this.baseUrl}/api/knowledge/${id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: this.writeHeaders(),
       body: JSON.stringify(fields),
     });
     if (!res.ok) {

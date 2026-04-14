@@ -5,6 +5,8 @@ import {
   searchKnowledge,
   getKnowledge,
   getAllFilters,
+  getApiKey,
+  setApiKey,
 } from "./api";
 import "./App.css";
 
@@ -20,6 +22,8 @@ function App() {
   const [projects, setProjects] = useState<string[]>([]);
   const [owners, setOwners] = useState<string[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(getApiKey() ?? "");
 
   useEffect(() => {
     getAllFilters().then(({ projects, owners, tags }) => {
@@ -71,7 +75,47 @@ function App() {
         <span className="stats">
           {total} knowledge item{total !== 1 ? "s" : ""}
         </span>
+        <button
+          className="settings-btn"
+          onClick={() => setShowSettings(!showSettings)}
+          title="API Key Settings"
+        >
+          {getApiKey() ? "🔑" : "⚙"}
+        </button>
       </header>
+
+      {showSettings && (
+        <div className="settings-bar">
+          <label>
+            API Key:
+            <input
+              type="password"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              placeholder="Enter API key for write operations"
+            />
+          </label>
+          <button
+            onClick={() => {
+              setApiKey(apiKeyInput || null);
+              setShowSettings(false);
+            }}
+          >
+            Save
+          </button>
+          {getApiKey() && (
+            <button
+              onClick={() => {
+                setApiKey(null);
+                setApiKeyInput("");
+                setShowSettings(false);
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="app-body">
         <aside className="sidebar">

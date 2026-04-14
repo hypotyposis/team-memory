@@ -4,6 +4,28 @@ import { mockKnowledge } from "./mockData";
 const API_BASE = "http://localhost:3457/api";
 const USE_MOCK = false;
 
+let _apiKey: string | null = localStorage.getItem("tm_api_key");
+
+export function setApiKey(key: string | null) {
+  _apiKey = key;
+  if (key) {
+    localStorage.setItem("tm_api_key", key);
+  } else {
+    localStorage.removeItem("tm_api_key");
+  }
+}
+
+export function getApiKey(): string | null {
+  return _apiKey;
+}
+
+function authHeaders(): Record<string, string> {
+  if (_apiKey) {
+    return { Authorization: `Bearer ${_apiKey}` };
+  }
+  return {};
+}
+
 interface ListParams {
   project?: string;
   tags?: string;
