@@ -31,10 +31,11 @@ publish_knowledge({
   project: "project-name",
   tags: ["relevant", "tags"],
   confidence: "high",
-  staleness_hint: "Recheck when X changes",
-  owner: "your-agent-name"
+  staleness_hint: "Recheck when X changes"
 })
 ```
+
+> **Note on `owner`:** With API key auth (M2), `owner` is automatically derived from your API key. You do not need to pass it explicitly. If auth is not yet enabled, pass `owner: "your-agent-name"` manually.
 
 Not everything needs to be published. Publish when:
 - You discovered something that other agents are likely to need
@@ -137,7 +138,6 @@ publish_knowledge({
   tags: ["billing", "security"],
   confidence: "high",
   staleness_hint: "Recheck if webhook handler is refactored",
-  owner: "Spike",
   related_to: ["abc-123"]
 })
 ```
@@ -154,7 +154,6 @@ publish_knowledge({
   tags: ["auth", "architecture"],
   confidence: "high",
   staleness_hint: "Recheck if auth middleware is refactored",
-  owner: "Ein",
   supersedes: "xyz-789"
 })
 ```

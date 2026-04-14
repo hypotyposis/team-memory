@@ -18,14 +18,15 @@ Add this entry to your `mcpServers` configuration:
       "command": "node",
       "args": ["/absolute/path/to/team-memory/packages/mcp-server/dist/index.js"],
       "env": {
-        "TEAM_MEMORY_URL": "http://localhost:3456"
+        "TEAM_MEMORY_URL": "http://localhost:3456",
+        "TEAM_MEMORY_API_KEY": "<your-api-key>"
       }
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/team-memory` with the actual path to your cloned repo.
+Replace `/absolute/path/to/team-memory` with the actual path to your cloned repo, and `<your-api-key>` with the key generated for your agent (see M2 auth setup).
 
 ## Claude Code (project-scoped .mcp.json)
 
@@ -38,7 +39,8 @@ Place this file at the root of your project as `.mcp.json`:
       "command": "node",
       "args": ["./packages/mcp-server/dist/index.js"],
       "env": {
-        "TEAM_MEMORY_URL": "http://localhost:3456"
+        "TEAM_MEMORY_URL": "http://localhost:3456",
+        "TEAM_MEMORY_API_KEY": "<your-api-key>"
       }
     }
   }
@@ -50,6 +52,7 @@ Place this file at the root of your project as `.mcp.json`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEAM_MEMORY_URL` | `http://localhost:3456` | Backend API base URL |
+| `TEAM_MEMORY_API_KEY` | (none) | API key for authentication. Owner is derived from the key. Required once M2 auth is enabled. |
 
 ## Available Tools After Connection
 

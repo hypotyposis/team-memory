@@ -22,6 +22,7 @@ You have access to a shared team knowledge base via the Team Memory MCP tools. U
 If you discovered something reusable (architectural insight, verified behavior, non-obvious finding), publish it:
 
 - Call `publish_knowledge` with a single, falsifiable claim.
+- Your `owner` identity is automatically set from your API key — do not pass it manually.
 - Set `confidence` based on your verification level: `high` (tested/traced), `medium` (read code), `low` (inferred).
 - Set `staleness_hint` to describe when this knowledge should be re-verified.
 - If your finding contradicts an existing item, use `supersedes` to link to the old item.
