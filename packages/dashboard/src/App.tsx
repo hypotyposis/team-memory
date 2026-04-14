@@ -175,13 +175,21 @@ function App() {
                   key={item.id}
                   className={`knowledge-row ${
                     selected?.id === item.id ? "selected" : ""
-                  }`}
+                  }${item.is_stale ? " stale" : ""}${item.duplicate_of ? " duplicate" : ""}`}
                   onClick={() => selectItem(item.id)}
                 >
-                  <div className="claim">{item.claim}</div>
+                  <div className="claim">
+                    {item.claim}
+                    {item.is_stale && (
+                      <span className="quality-badge stale-badge">stale</span>
+                    )}
+                    {item.duplicate_of && (
+                      <span className="quality-badge duplicate-badge">duplicate</span>
+                    )}
+                  </div>
                   <div className="meta">
-                    <span className={`confidence ${item.confidence}`}>
-                      {item.confidence}
+                    <span className={`confidence ${item.effective_confidence ?? item.confidence}`}>
+                      {item.effective_confidence ?? item.confidence}
                     </span>
                     <span>{item.project}</span>
                     {item.module && <span>/ {item.module}</span>}
@@ -257,7 +265,15 @@ function DetailView({
 }) {
   return (
     <div className="detail-content">
-      <h2>{item.claim}</h2>
+      <h2>
+        {item.claim}
+        {item.is_stale && (
+          <span className="quality-badge stale-badge">stale</span>
+        )}
+        {item.duplicate_of && (
+          <span className="quality-badge duplicate-badge">duplicate</span>
+        )}
+      </h2>
 
       {item.detail && (
         <div className="detail-section">
@@ -266,12 +282,40 @@ function DetailView({
         </div>
       )}
 
+      {(item.is_stale || item.duplicate_of) && (
+        <div className="detail-section quality-warnings">
+          {item.is_stale && (
+            <div className="quality-warning stale-warning">
+              This knowledge item is stale — it was last updated more than {item.stale_after_days ?? 30} days ago.
+              {item.stale_at && <> Stale since {formatDate(item.stale_at)}.</>}
+              {item.effective_confidence && item.effective_confidence !== item.confidence && (
+                <> Effective confidence downgraded from {item.confidence} to {item.effective_confidence}.</>
+              )}
+            </div>
+          )}
+          {item.duplicate_of && (
+            <div className="quality-warning duplicate-warning">
+              Possible duplicate of{" "}
+              <span
+                className="related-id"
+                onClick={() => onNavigate(item.duplicate_of!)}
+              >
+                {item.duplicate_of}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="detail-section">
         <div className="detail-meta">
           <div className="detail-meta-item">
             <span className="label">Confidence</span>
-            <span className={`confidence ${item.confidence}`}>
-              {item.confidence}
+            <span className={`confidence ${item.effective_confidence ?? item.confidence}`}>
+              {item.effective_confidence ?? item.confidence}
+              {item.effective_confidence && item.effective_confidence !== item.confidence && (
+                <span className="confidence-original"> (was {item.confidence})</span>
+              )}
             </span>
           </div>
           <div className="detail-meta-item">
