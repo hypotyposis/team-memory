@@ -63,3 +63,10 @@ jobs:
         env:
           TEAM_MEMORY_BASE_URL: http://localhost:3456/api
           TEAM_MEMORY_API_KEY: ${{ steps.apikey.outputs.key }}
+
+      - name: Run MCP smoke tests
+        working-directory: e2e/scripts
+        run: node team-memory-mcp-smoke.mjs
+        env:
+          TEAM_MEMORY_URL: http://localhost:3456
+          TEAM_MEMORY_API_KEY: ${{ steps.apikey.outputs.key }}
