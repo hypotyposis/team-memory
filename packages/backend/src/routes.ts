@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { v4 as uuidv4 } from "uuid";
 import { requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
+import { findPersistedDuplicateOf } from "./duplicates.js";
 import { detectPossibleDuplicates, qualityFlagsFromRow } from "./quality.js";
 
 const api = new Hono();
@@ -58,7 +59,7 @@ api.post("/knowledge", async (c) => {
   const id = uuidv4();
   const now = new Date().toISOString();
   const duplicates = detectPossibleDuplicates(db, { claim: body.claim, project: body.project });
-  const duplicateOf = duplicates[0]?.id ?? null;
+  const duplicateOf = findPersistedDuplicateOf(body.claim, body.project, duplicates);
 
   if (body.supersedes) {
     const old = db.prepare("SELECT id, superseded_by FROM knowledge WHERE id = ?").get(body.supersedes) as { id: string; superseded_by: string | null } | undefined;

@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import path from "node:path";
+import { cleanupFalsePositiveDuplicateOf } from "./duplicates.js";
 
 const DB_PATH = process.env.TEAM_MEMORY_DB ?? path.join(process.cwd(), "team-memory.db");
 
@@ -82,6 +83,7 @@ export function getDb(): Database.Database {
 
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
+  cleanupFalsePositiveDuplicateOf(_db);
 
   return _db;
 }
