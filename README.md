@@ -98,18 +98,33 @@ There is no repo-root workspace script yet. Install and run each package from it
 
 The backend defaults to port `3456`, but the current dashboard client points at `http://localhost:3457/api`.
 
+The backend SQLite file also defaults to `<current working directory>/team-memory.db`. That is fine for quick local demos, but for any shared or long-running instance you should set `TEAM_MEMORY_DB` explicitly so the database location does not drift with the shell's CWD.
+
 If you want the dashboard to work without editing source, run the backend on `3457`:
 
 ```bash
 cd packages/backend
 npm install
-PORT=3457 npm run dev
+PORT=3457 TEAM_MEMORY_DB=/absolute/path/to/team-memory.db npm run dev
 ```
 
 Health check:
 
 ```bash
 curl http://localhost:3457/health
+```
+
+If you are running a shared backend for multiple agents, use an absolute path, for example:
+
+```bash
+TEAM_MEMORY_DB=/Users/you/.slock/shared/team-memory/team-memory.db
+```
+
+The backend key-management CLI uses the same env var, so point it at the same DB before creating or revoking keys:
+
+```bash
+TEAM_MEMORY_DB=/absolute/path/to/team-memory.db \
+npm run keys --workspace=packages/backend -- create <owner>
 ```
 
 ### 2. Start the MCP server
