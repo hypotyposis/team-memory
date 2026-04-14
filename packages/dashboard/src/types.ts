@@ -35,5 +35,7 @@ export interface KnowledgeListItem {
   stale_after_days?: number;
   stale_at?: string;
   effective_confidence?: "high" | "medium" | "low";
+  similarity?: number;
+  search_mode?: "fts" | "semantic" | "hybrid";
   created_at: string;
 }

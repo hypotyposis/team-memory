@@ -22,6 +22,7 @@ function App() {
   const [projects, setProjects] = useState<string[]>([]);
   const [owners, setOwners] = useState<string[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  const [searchMode, setSearchMode] = useState<"fts" | "semantic" | "hybrid" | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey() ?? "");
 
@@ -48,6 +49,15 @@ function App() {
     }
     setItems(result.items);
     setTotal(result.total);
+    if (query.trim() && result.items.length > 0) {
+      const modes = new Set(result.items.map((i) => i.search_mode).filter(Boolean));
+      if (modes.has("hybrid") || modes.size > 1) setSearchMode("hybrid");
+      else if (modes.has("semantic")) setSearchMode("semantic");
+      else if (modes.has("fts")) setSearchMode("fts");
+      else setSearchMode(null);
+    } else {
+      setSearchMode(null);
+    }
   }, [query, filterProject, filterOwner, filterTag]);
 
   useEffect(() => {
@@ -152,6 +162,11 @@ function App() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            {searchMode && query.trim() && (
+              <span className={`search-mode-badge ${searchMode}`}>
+                {searchMode}
+              </span>
+            )}
             {hasFilters && (
               <button className="filter-btn" onClick={clearFilters}>
                 Clear
@@ -191,6 +206,9 @@ function App() {
                     <span className={`confidence ${item.effective_confidence ?? item.confidence}`}>
                       {item.effective_confidence ?? item.confidence}
                     </span>
+                    {item.similarity != null && (
+                      <span className="similarity">{Math.round(item.similarity * 100)}% match</span>
+                    )}
                     <span>{item.project}</span>
                     {item.module && <span>/ {item.module}</span>}
                     <span>by {item.owner}</span>
