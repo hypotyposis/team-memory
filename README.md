@@ -94,30 +94,34 @@ The model is intentionally small: publish, browse/search, inspect, and update me
 
 > **Node version matters:** `better-sqlite3` compiles native bindings tied to a specific Node ABI. If you install with one Node major version and run with another, you'll get an ABI mismatch crash. Use the same Node version for both `npm install` and runtime.
 
+Use `.env.example` as the canonical list of runtime variables. The repo does not auto-load that file for you, so either export variables in your shell or prefix them inline in the commands below.
+
 ### 1. Start the backend
 
-The backend defaults to port `3456`, but the current dashboard client points at `http://localhost:3457/api`.
+The backend defaults to port `3456`. If that port is occupied, choose another one with `PORT`.
 
 The backend SQLite file also defaults to `<current working directory>/team-memory.db`. That is fine for quick local demos, but for any shared or long-running instance you should set `TEAM_MEMORY_DB` explicitly so the database location does not drift with the shell's CWD.
 
-If you want the dashboard to work without editing source, run the backend on `3457`:
+Example using `3460`:
 
 ```bash
 cd packages/backend
 npm install
-PORT=3457 TEAM_MEMORY_DB=/absolute/path/to/team-memory.db npm run dev
+PORT=3460 npm run dev
 ```
 
 Health check:
 
 ```bash
-curl http://localhost:3457/health
+curl http://localhost:3460/health
 ```
 
 If you are running a shared backend for multiple agents, use an absolute path, for example:
 
 ```bash
-TEAM_MEMORY_DB=/Users/you/.slock/shared/team-memory/team-memory.db
+PORT=3460 \
+TEAM_MEMORY_DB=/Users/you/.slock/shared/team-memory/team-memory.db \
+npm run dev
 ```
 
 The backend key-management CLI uses the same env var, so point it at the same DB before creating or revoking keys:
@@ -129,28 +133,42 @@ npm run keys --workspace=packages/backend -- create <owner>
 
 ### 2. Start the MCP server
 
-Point it at the same backend URL:
+Point it at the same backend URL. If you customized `PORT`, update `TEAM_MEMORY_URL` to match:
 
 ```bash
 cd packages/mcp-server
 npm install
-TEAM_MEMORY_URL=http://localhost:3457 npm run dev
+TEAM_MEMORY_URL=http://localhost:3460 npm run dev
 ```
 
 ### 3. Start the dashboard
 
+Point the dashboard at the same backend URL with `VITE_API_BASE`:
+
 ```bash
 cd packages/dashboard
 npm install
-npm run dev
+VITE_API_BASE=http://localhost:3460/api npm run dev
 ```
 
 Open `http://localhost:5173`.
 
+### Port customization summary
+
+If the default backend port is unavailable:
+
+1. Pick any free port, for example `3460`
+2. Start the backend with `PORT=<your-port>`
+3. If the backend should not depend on shell CWD, also set `TEAM_MEMORY_DB=/absolute/path/to/team-memory.db`
+4. Point the MCP server at `TEAM_MEMORY_URL=http://localhost:<your-port>`
+5. Point the dashboard at `VITE_API_BASE=http://localhost:<your-port>/api`
+
+The backend port, MCP URL, and dashboard API base must stay aligned.
+
 ### 4. Seed a sample knowledge item
 
 ```bash
-curl -X POST http://localhost:3457/api/knowledge \
+curl -X POST http://localhost:3460/api/knowledge \
   -H "Content-Type: application/json" \
   -d '{
     "claim": "Infer monorepo uses dual deploy modes: control and inference",
@@ -167,7 +185,7 @@ curl -X POST http://localhost:3457/api/knowledge \
 ### 5. Query it back
 
 ```bash
-curl "http://localhost:3457/api/knowledge/search?q=deploy&project=infer-monorepo"
+curl "http://localhost:3460/api/knowledge/search?q=deploy&project=infer-monorepo"
 ```
 
 ## How To Use It
