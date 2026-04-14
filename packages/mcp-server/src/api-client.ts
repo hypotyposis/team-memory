@@ -31,6 +31,7 @@ export interface KnowledgeSummary {
   project: string;
   module?: string;
   created_at: string;
+  similarity?: number;
 }
 
 export interface PublishInput {
@@ -58,6 +59,12 @@ export interface QueryInput {
 export interface ListInput {
   project?: string;
   tags?: string[];
+  limit?: number;
+}
+
+export interface SemanticSearchInput {
+  query: string;
+  project?: string;
   limit?: number;
 }
 
@@ -142,6 +149,23 @@ export class ApiClient {
       throw new Error(`get failed (${res.status}): ${text}`);
     }
     return res.json() as Promise<KnowledgeItem>;
+  }
+
+  async semanticSearch(input: SemanticSearchInput): Promise<KnowledgeSummary[]> {
+    const params = new URLSearchParams();
+    params.set("q", input.query);
+    if (input.project) params.set("project", input.project);
+    if (input.limit) params.set("limit", String(input.limit));
+
+    const res = await fetch(
+      `${this.baseUrl}/api/knowledge/semantic-search?${params.toString()}`
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`semantic search failed (${res.status}): ${text}`);
+    }
+    const data = (await res.json()) as { items: KnowledgeSummary[] };
+    return data.items;
   }
 
   async update(input: UpdateInput): Promise<KnowledgeItem> {
