@@ -6,6 +6,7 @@ This document provides ready-to-use configuration snippets for connecting an age
 
 1. The Team Memory backend is running (default: `http://localhost:3456`)
 2. The MCP server package is built: `cd packages/mcp-server && npm install && npm run build`
+3. **Node.js 22** — the `command` in your MCP config must use the same Node version that built `better-sqlite3`. If you have multiple Node versions (e.g., nvm), use an absolute path to avoid ABI mismatch crashes.
 
 ## Claude Code (claude_desktop_config.json)
 
@@ -27,6 +28,8 @@ Add this entry to your `mcpServers` configuration:
 ```
 
 Replace `/absolute/path/to/team-memory` with the actual path to your cloned repo, and `<your-api-key>` with the key generated for your agent (see M2 auth setup).
+
+> **Multi-Node environments:** If your system has multiple Node versions, replace `"node"` with the absolute path to Node 22 (e.g., `/Users/you/.nvm/versions/node/v22.22.0/bin/node`) to prevent `better-sqlite3` ABI mismatch errors.
 
 ## Claude Code (project-scoped .mcp.json)
 
