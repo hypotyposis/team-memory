@@ -48,7 +48,6 @@ interface SearchParams {
 interface PaginatedResponse<T> {
   items: T[];
   total: number;
-  search_mode?: "fts" | "semantic" | "hybrid";
 }
 
 // --- Mock implementations ---

@@ -49,7 +49,15 @@ function App() {
     }
     setItems(result.items);
     setTotal(result.total);
-    setSearchMode(result.search_mode ?? null);
+    if (query.trim() && result.items.length > 0) {
+      const modes = new Set(result.items.map((i) => i.search_mode).filter(Boolean));
+      if (modes.has("hybrid") || modes.size > 1) setSearchMode("hybrid");
+      else if (modes.has("semantic")) setSearchMode("semantic");
+      else if (modes.has("fts")) setSearchMode("fts");
+      else setSearchMode(null);
+    } else {
+      setSearchMode(null);
+    }
   }, [query, filterProject, filterOwner, filterTag]);
 
   useEffect(() => {
