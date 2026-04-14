@@ -147,7 +147,7 @@ async function fetchList(params: ListParams): Promise<PaginatedResponse<Knowledg
   if (params.include_superseded) url.searchParams.set("include_superseded", "true");
   if (params.limit) url.searchParams.set("limit", String(params.limit));
   if (params.offset) url.searchParams.set("offset", String(params.offset));
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -160,13 +160,13 @@ async function fetchSearch(params: SearchParams): Promise<PaginatedResponse<Know
   if (params.module) url.searchParams.set("module", params.module);
   if (params.include_superseded) url.searchParams.set("include_superseded", "true");
   if (params.limit) url.searchParams.set("limit", String(params.limit));
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
 
 async function fetchGet(id: string): Promise<KnowledgeItem | null> {
-  const res = await fetch(`${API_BASE}/knowledge/${encodeURIComponent(id)}`);
+  const res = await fetch(`${API_BASE}/knowledge/${encodeURIComponent(id)}`, { headers: authHeaders() });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
