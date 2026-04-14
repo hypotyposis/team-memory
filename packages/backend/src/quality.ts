@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { normalizeClaimForDuplicateMatch } from "./duplicates.js";
+import { decodeEmbedding, cosineSimilarity } from "./vector.js";
 
 const CONFIDENCE_ORDER = ["low", "medium", "high"] as const;
 type Confidence = (typeof CONFIDENCE_ORDER)[number];
@@ -25,6 +27,7 @@ interface DuplicateRow {
   staleness_hint: string;
   owner: string;
   created_at: string;
+  embedding?: Buffer | null;
 }
 
 export interface DuplicateSummary {
@@ -37,6 +40,11 @@ export interface DuplicateSummary {
   staleness_hint: string;
   owner: string;
   created_at: string;
+  similarity?: number;
+}
+
+interface RankedDuplicateSummary extends DuplicateSummary {
+  similarity: number;
 }
 
 function normalizeConfidence(value: string): Confidence {
@@ -68,18 +76,6 @@ export function qualityFlagsFromRow(row: QualityRow): QualityFlags {
   };
 }
 
-function tokenize(text: string): string[] {
-  return Array.from(
-    new Set(
-      text
-        .toLowerCase()
-        .split(/[^a-z0-9_]+/g)
-        .map((part) => part.trim())
-        .filter((part) => part.length >= 3),
-    ),
-  ).slice(0, 8);
-}
-
 function rowToDuplicateSummary(row: DuplicateRow): DuplicateSummary {
   return {
     id: row.id,
@@ -94,50 +90,67 @@ function rowToDuplicateSummary(row: DuplicateRow): DuplicateSummary {
   };
 }
 
+function duplicateWarningThreshold(): number {
+  const raw = Number.parseFloat(process.env.TEAM_MEMORY_DUPLICATE_WARNING_THRESHOLD ?? "0.8");
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.8;
+}
+
 export function detectPossibleDuplicates(
   db: Database.Database,
-  input: { claim: string; project: string; excludeId?: string | null },
+  input: { claim: string; project: string; embedding?: Buffer | null; excludeId?: string | null },
 ): DuplicateSummary[] {
   const seen = new Set<string>();
   const matches: DuplicateSummary[] = [];
   const excludeId = input.excludeId ?? null;
-
-  const exactRows = db.prepare(
-    `SELECT id, claim, project, module, tags, confidence, staleness_hint, owner, created_at
+  const projectRows = db.prepare(
+    `SELECT id, claim, project, module, tags, confidence, staleness_hint, owner, created_at, embedding
      FROM knowledge
-     WHERE lower(claim) = lower(?)
-       AND project = ?
+     WHERE project = ?
        AND superseded_by IS NULL
        AND (? IS NULL OR id != ?)
-     ORDER BY created_at DESC
-     LIMIT 3`,
-  ).all(input.claim, input.project, excludeId, excludeId) as DuplicateRow[];
+     ORDER BY created_at DESC`,
+  ).all(input.project, excludeId, excludeId) as DuplicateRow[];
+  const normalizedClaim = normalizeClaimForDuplicateMatch(input.claim);
+  const exactRows = projectRows.filter(
+    (row) => normalizeClaimForDuplicateMatch(row.claim) === normalizedClaim,
+  );
 
   for (const row of exactRows) {
     seen.add(row.id);
     matches.push(rowToDuplicateSummary(row));
+    if (matches.length >= 3) return matches;
   }
 
-  const terms = tokenize(input.claim);
-  if (terms.length === 0) return matches;
+  const currentEmbedding = decodeEmbedding(input.embedding ?? null);
+  if (!currentEmbedding) return matches;
 
-  const query = terms.join(" OR ");
-  const ftsRows = db.prepare(
-    `SELECT k.id, k.claim, k.project, k.module, k.tags, k.confidence, k.staleness_hint, k.owner, k.created_at
-     FROM knowledge_fts fts
-     JOIN knowledge k ON k.rowid = fts.rowid
-     WHERE knowledge_fts MATCH ?
-       AND k.project = ?
-       AND k.superseded_by IS NULL
-       AND (? IS NULL OR k.id != ?)
-     ORDER BY rank
-     LIMIT 5`,
-  ).all(query, input.project, excludeId, excludeId) as DuplicateRow[];
+  const warningThreshold = duplicateWarningThreshold();
+  const rankedRows = projectRows
+    .filter((row) => !seen.has(row.id) && row.embedding != null)
+    .map((row) => {
+      const storedEmbedding = decodeEmbedding(row.embedding ?? null);
+      if (!storedEmbedding) return null;
 
-  for (const row of ftsRows) {
+      const similarity = cosineSimilarity(currentEmbedding, storedEmbedding);
+      if (similarity < warningThreshold) return null;
+
+      return {
+        ...rowToDuplicateSummary(row),
+        similarity,
+      };
+    })
+    .filter((row): row is RankedDuplicateSummary => row !== null)
+    .sort((left, right) => {
+      if (right.similarity !== left.similarity) {
+        return right.similarity - left.similarity;
+      }
+      return Date.parse(right.created_at) - Date.parse(left.created_at);
+    });
+
+  for (const row of rankedRows) {
     if (seen.has(row.id)) continue;
     seen.add(row.id);
-    matches.push(rowToDuplicateSummary(row));
+    matches.push(row);
     if (matches.length >= 3) break;
   }
 

@@ -180,7 +180,11 @@ api.post("/knowledge", async (c) => {
   const id = uuidv4();
   const now = new Date().toISOString();
   const embedding = await embedKnowledgeItem(body.claim, body.detail ?? null);
-  const duplicates = detectPossibleDuplicates(db, { claim: body.claim, project: body.project });
+  const duplicates = detectPossibleDuplicates(db, {
+    claim: body.claim,
+    project: body.project,
+    embedding,
+  });
   const duplicateOf = findPersistedDuplicateOf(body.claim, body.project, duplicates);
 
   if (body.supersedes) {
