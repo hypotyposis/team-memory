@@ -21,36 +21,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # Backend
-      - name: Install backend dependencies
-        working-directory: packages/backend
+      - name: Install all dependencies
         run: npm install
 
-      - name: Build backend
-        working-directory: packages/backend
+      - name: Build all packages
         run: npm run build
-
-      # MCP Server
-      - name: Install MCP server dependencies
-        working-directory: packages/mcp-server
-        run: npm install
-
-      - name: Build MCP server
-        working-directory: packages/mcp-server
-        run: npm run build
-
-      # Dashboard
-      - name: Install dashboard dependencies
-        working-directory: packages/dashboard
-        run: npm install
 
       - name: Lint dashboard
-        working-directory: packages/dashboard
         run: npm run lint
-
-      - name: Build dashboard
-        working-directory: packages/dashboard
-        run: npm run build
 
       # E2E
       - name: Start backend for E2E

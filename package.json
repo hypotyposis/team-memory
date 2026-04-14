@@ -1,0 +1,17 @@
+{
+  "name": "team-memory",
+  "private": true,
+  "workspaces": [
+    "packages/backend",
+    "packages/mcp-server",
+    "packages/dashboard"
+  ],
+  "scripts": {
+    "dev": "npm run dev:backend & npm run dev:dashboard & wait",
+    "dev:backend": "npm run dev --workspace=packages/backend",
+    "dev:dashboard": "npm run dev --workspace=packages/dashboard",
+    "dev:mcp": "npm run dev --workspace=packages/mcp-server",
+    "build": "npm run build --workspace=packages/backend && npm run build --workspace=packages/mcp-server && npm run build --workspace=packages/dashboard",
+    "lint": "npm run lint --workspace=packages/dashboard"
+  }
+}
