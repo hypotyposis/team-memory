@@ -14,8 +14,9 @@ You have access to a shared team knowledge base via the Team Memory MCP tools. U
 ### Before starting a task
 
 1. Call `query_knowledge` with keywords related to your task and the project name.
-2. If results are found, call `get_knowledge` to read the full detail.
-3. Use existing knowledge as context. Do not redo analysis that has already been published.
+2. Call `semantic_search` with a natural language description of your task — this finds conceptually related knowledge even when exact keywords differ.
+3. If results are found, call `get_knowledge` to read the full detail.
+4. Use existing knowledge as context. Do not redo analysis that has already been published.
 
 ### After completing a task
 

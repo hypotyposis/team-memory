@@ -6,11 +6,15 @@ This document defines how agents should interact with Team Memory in their daily
 
 ### 1. Query Before Work
 
-Before starting any task, query Team Memory for existing knowledge:
+Before starting any task, query Team Memory for existing knowledge. Use **both** keyword and semantic search for best coverage:
 
 ```
 query_knowledge({ query: "<task topic>", project: "<project>" })
+semantic_search({ query: "<natural language description of your task>", project: "<project>" })
 ```
+
+- `query_knowledge` uses keyword matching (FTS5) — best for exact terms, function names, error messages.
+- `semantic_search` uses vector similarity — best for conceptual queries where the exact words may differ.
 
 If results are found, read the full item:
 
@@ -120,8 +124,11 @@ Use this when:
 ### Example 1: Starting a New Task
 
 ```
-# Step 1: Check what's known
+# Step 1: Check what's known (keyword search)
 query_knowledge({ query: "billing refund", project: "infer-monorepo" })
+
+# Step 1b: Also try semantic search for broader matches
+semantic_search({ query: "how are refunds processed in the billing system", project: "infer-monorepo" })
 
 # Step 2: Found relevant item, read full detail
 get_knowledge({ id: "abc-123" })
