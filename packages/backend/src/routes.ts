@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
 import { findPersistedDuplicateOf } from "./duplicates.js";
+import { embedKnowledgeItem } from "./embedding.js";
 import { detectPossibleDuplicates, qualityFlagsFromRow } from "./quality.js";
 
 const api = new Hono();
@@ -58,6 +59,7 @@ api.post("/knowledge", async (c) => {
   const db = getDb();
   const id = uuidv4();
   const now = new Date().toISOString();
+  const embedding = await embedKnowledgeItem(body.claim, body.detail ?? null);
   const duplicates = detectPossibleDuplicates(db, { claim: body.claim, project: body.project });
   const duplicateOf = findPersistedDuplicateOf(body.claim, body.project, duplicates);
 
@@ -74,11 +76,11 @@ api.post("/knowledge", async (c) => {
     }
   }
 
-  const insert = db.prepare(`INSERT INTO knowledge (id, claim, detail, source, project, module, tags, confidence, staleness_hint, owner, related_to, supersedes, superseded_by, duplicate_of, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`);
+  const insert = db.prepare(`INSERT INTO knowledge (id, claim, detail, source, project, module, tags, confidence, staleness_hint, owner, related_to, supersedes, superseded_by, duplicate_of, embedding, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`);
   const updateSuperseded = db.prepare("UPDATE knowledge SET superseded_by = ? WHERE id = ?");
 
   db.transaction(() => {
-    insert.run(id, body.claim, body.detail ?? null, JSON.stringify(body.source), body.project, body.module ?? null, JSON.stringify(body.tags), body.confidence, body.staleness_hint, auth.owner, JSON.stringify(body.related_to ?? []), body.supersedes ?? null, duplicateOf, now, now);
+    insert.run(id, body.claim, body.detail ?? null, JSON.stringify(body.source), body.project, body.module ?? null, JSON.stringify(body.tags), body.confidence, body.staleness_hint, auth.owner, JSON.stringify(body.related_to ?? []), body.supersedes ?? null, duplicateOf, embedding, now, now);
     if (body.supersedes) updateSuperseded.run(id, body.supersedes);
   })();
 
