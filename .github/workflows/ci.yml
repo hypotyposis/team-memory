@@ -71,8 +71,17 @@ jobs:
           echo "Backend failed to start"
           exit 1
 
+      - name: Create E2E API key
+        id: apikey
+        working-directory: packages/backend
+        run: |
+          OUTPUT=$(npx tsx src/cli.ts create e2e-test)
+          KEY=$(echo "$OUTPUT" | grep '^key=' | cut -d= -f2)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
       - name: Run E2E HTTP tests
         working-directory: e2e/scripts
         run: node team-memory-e2e-http-demo.mjs
         env:
           TEAM_MEMORY_BASE_URL: http://localhost:3456/api
+          TEAM_MEMORY_API_KEY: ${{ steps.apikey.outputs.key }}
