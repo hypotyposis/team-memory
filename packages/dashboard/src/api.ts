@@ -19,7 +19,7 @@ export function getApiKey(): string | null {
   return _apiKey;
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   if (_apiKey) {
     return { Authorization: `Bearer ${_apiKey}` };
   }
