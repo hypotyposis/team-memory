@@ -21,6 +21,25 @@ interface SemanticKnowledgeRow extends KnowledgeRow {
   embedding: Buffer | null;
 }
 
+type SearchMode = "fts" | "semantic" | "hybrid";
+
+// Prefer semantic signal, but give a small bonus when a row matches both worlds.
+const HYBRID_FTS_WEIGHT = 0.35;
+const HYBRID_SEMANTIC_WEIGHT = 0.65;
+const HYBRID_MATCH_BONUS = 0.15;
+const SEMANTIC_ONLY_WEIGHT = 0.75;
+const FTS_ONLY_WEIGHT = 0.55;
+
+interface FtsSearchRow extends KnowledgeRow {
+  rank: number;
+}
+
+interface SearchResultItem extends ReturnType<typeof summaryFromRow> {
+  rank?: number;
+  similarity?: number;
+  search_mode: SearchMode;
+}
+
 function rowToJson(row: KnowledgeRow) {
   return {
     id: row.id, claim: row.claim, detail: row.detail,
@@ -42,6 +61,102 @@ function summaryFromRow(row: KnowledgeRow) {
     duplicate_of: row.duplicate_of, created_at: row.created_at,
     ...qualityFlagsFromRow(row),
   };
+}
+
+function parseTagList(tags: string | null | undefined): string[] | undefined {
+  if (!tags) return undefined;
+  const list = tags.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+  return list.length > 0 ? list : undefined;
+}
+
+function matchesRequestedTags(row: KnowledgeRow, tags: string[] | undefined): boolean {
+  if (!tags || tags.length === 0) return true;
+  const rowTags: string[] = JSON.parse(row.tags).map((tag: string) => tag.toLowerCase());
+  return tags.some((tag) => rowTags.includes(tag));
+}
+
+function normalizedFtsScores(rows: FtsSearchRow[]): Map<string, number> {
+  if (rows.length === 0) return new Map();
+  if (rows.length === 1) return new Map([[rows[0]!.id, 1]]);
+
+  const ranks = rows.map((row) => row.rank);
+  const best = Math.min(...ranks);
+  const worst = Math.max(...ranks);
+  if (best === worst) {
+    return new Map(rows.map((row) => [row.id, 1]));
+  }
+
+  return new Map(
+    rows.map((row) => [row.id, (worst - row.rank) / (worst - best)]),
+  );
+}
+
+function compareSearchResults(left: SearchResultItem & { hybrid_score: number }, right: SearchResultItem & { hybrid_score: number }): number {
+  if (right.hybrid_score !== left.hybrid_score) {
+    return right.hybrid_score - left.hybrid_score;
+  }
+  const modePriority: Record<SearchMode, number> = {
+    hybrid: 3,
+    semantic: 2,
+    fts: 1,
+  };
+  if (modePriority[right.search_mode] !== modePriority[left.search_mode]) {
+    return modePriority[right.search_mode] - modePriority[left.search_mode];
+  }
+  return Date.parse(right.created_at) - Date.parse(left.created_at);
+}
+
+async function runSemanticCandidates(
+  db: ReturnType<typeof getDb>,
+  input: {
+    query: string;
+    project?: string;
+    module?: string;
+    includeSuperseded: boolean;
+    tags?: string[];
+    candidateLimit: number;
+  },
+): Promise<Array<ReturnType<typeof summaryFromRow> & { similarity: number }>> {
+  const [queryEmbedding] = await embedTexts([input.query]);
+  if (!queryEmbedding) {
+    return [];
+  }
+
+  const params: (string | number)[] = [];
+  const conditions = ["embedding IS NOT NULL"];
+  if (!input.includeSuperseded) {
+    conditions.push("superseded_by IS NULL");
+  }
+  if (input.project) {
+    conditions.push("project = ?");
+    params.push(input.project);
+  }
+  if (input.module) {
+    conditions.push("module = ?");
+    params.push(input.module);
+  }
+
+  const rows = db.prepare(
+    `SELECT * FROM knowledge WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`,
+  ).all(...params) as SemanticKnowledgeRow[];
+
+  return rows
+    .filter((row) => matchesRequestedTags(row, input.tags))
+    .map((row) => {
+      const storedEmbedding = decodeEmbedding(row.embedding);
+      if (!storedEmbedding) return null;
+
+      const similarity = cosineSimilarity(queryEmbedding, storedEmbedding);
+      if (similarity <= 0) return null;
+
+      return {
+        ...summaryFromRow(row),
+        similarity,
+      };
+    })
+    .filter((row): row is ReturnType<typeof summaryFromRow> & { similarity: number } => row !== null)
+    .sort((left, right) => right.similarity - left.similarity)
+    .slice(0, input.candidateLimit);
 }
 
 const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
@@ -102,7 +217,7 @@ api.post("/knowledge", async (c) => {
 });
 
 // 2. GET /api/knowledge/search
-api.get("/knowledge/search", (c) => {
+api.get("/knowledge/search", async (c) => {
   const q = c.req.query("q");
   if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
   const project = c.req.query("project");
@@ -111,6 +226,8 @@ api.get("/knowledge/search", (c) => {
   const includeSuperseded = c.req.query("include_superseded") === "true";
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
   const db = getDb();
+  const requestedTags = parseTagList(tags);
+  const candidateLimit = Math.max(limit * 3, limit);
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   if (!includeSuperseded) conditions.push("k.superseded_by IS NULL");
@@ -118,13 +235,65 @@ api.get("/knowledge/search", (c) => {
   if (module_) { conditions.push("k.module = ?"); params.push(module_); }
   const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
   const sql = `SELECT k.*, rank FROM knowledge_fts fts JOIN knowledge k ON k.rowid = fts.rowid WHERE knowledge_fts MATCH ? ${whereClause} ORDER BY rank LIMIT ?`;
-  const rows = db.prepare(sql).all(q, ...params, limit) as (KnowledgeRow & { rank: number })[];
-  let filtered = rows;
-  if (tags) {
-    const tagList = tags.split(",").map((t) => t.trim().toLowerCase());
-    filtered = rows.filter((row) => { const rowTags: string[] = JSON.parse(row.tags).map((t: string) => t.toLowerCase()); return tagList.some((t) => rowTags.includes(t)); });
+  const ftsRows = db.prepare(sql).all(q, ...params, candidateLimit) as FtsSearchRow[];
+  const filteredFtsRows = ftsRows.filter((row) => matchesRequestedTags(row, requestedTags));
+  const ftsScores = normalizedFtsScores(filteredFtsRows);
+
+  const semanticRows = await runSemanticCandidates(db, {
+    query: q,
+    project: project ?? undefined,
+    module: module_ ?? undefined,
+    includeSuperseded,
+    tags: requestedTags,
+    candidateLimit,
+  });
+
+  const merged = new Map<string, SearchResultItem & { hybrid_score: number; fts_score: number; semantic_score: number }>();
+
+  for (const row of filteredFtsRows) {
+    const ftsScore = ftsScores.get(row.id) ?? 0;
+    merged.set(row.id, {
+      ...summaryFromRow(row),
+      rank: row.rank,
+      search_mode: "fts",
+      hybrid_score: ftsScore * FTS_ONLY_WEIGHT,
+      fts_score: ftsScore,
+      semantic_score: 0,
+    });
   }
-  return c.json({ items: filtered.map((row) => ({ ...summaryFromRow(row), rank: row.rank })), total: tags ? filtered.length : rows.length });
+
+  for (const row of semanticRows) {
+    const existing = merged.get(row.id);
+    if (existing) {
+      const semanticScore = row.similarity;
+      merged.set(row.id, {
+        ...existing,
+        similarity: row.similarity,
+        search_mode: "hybrid",
+        semantic_score: semanticScore,
+        hybrid_score:
+          existing.fts_score * HYBRID_FTS_WEIGHT
+          + semanticScore * HYBRID_SEMANTIC_WEIGHT
+          + HYBRID_MATCH_BONUS,
+      });
+      continue;
+    }
+
+    merged.set(row.id, {
+      ...row,
+      search_mode: "semantic",
+      hybrid_score: row.similarity * SEMANTIC_ONLY_WEIGHT,
+      fts_score: 0,
+      semantic_score: row.similarity,
+    });
+  }
+
+  const items = Array.from(merged.values())
+    .sort(compareSearchResults)
+    .slice(0, limit)
+    .map(({ hybrid_score: _hybridScore, fts_score: _ftsScore, semantic_score: _semanticScore, ...item }) => item);
+
+  return c.json({ items, total: merged.size });
 });
 
 // 3. GET /api/knowledge/semantic-search
