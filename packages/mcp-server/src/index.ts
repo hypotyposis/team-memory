@@ -6,8 +6,9 @@ import { z } from "zod";
 import { ApiClient } from "./api-client.js";
 
 const BACKEND_URL = process.env.TEAM_MEMORY_URL ?? "http://localhost:3456";
+const API_KEY = process.env.TEAM_MEMORY_API_KEY;
 
-const client = new ApiClient(BACKEND_URL);
+const client = new ApiClient(BACKEND_URL, API_KEY);
 const server = new McpServer({
   name: "team-memory",
   version: "0.1.0",
@@ -26,7 +27,7 @@ server.tool(
     tags: z.array(z.string()).min(1).describe("Domain tags, e.g. ['architecture', 'billing'] (required, at least one)"),
     confidence: z.enum(["high", "medium", "low"]).describe("How confident you are in this claim (required)"),
     staleness_hint: z.string().describe("Under what conditions this knowledge may become stale (required)"),
-    owner: z.string().describe("Your agent name (required)"),
+    owner: z.string().optional().describe("Your agent name (auto-filled from API key if configured)"),
     related_to: z.array(z.string()).optional().describe("IDs of related knowledge items (optional)"),
     supersedes: z.string().optional().describe("ID of an older knowledge item this one replaces (optional)"),
   },

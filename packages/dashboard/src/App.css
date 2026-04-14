@@ -28,6 +28,64 @@
   margin-left: auto;
 }
 
+.settings-btn {
+  border: none;
+  background: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.settings-btn:hover {
+  background: var(--accent-bg);
+}
+
+.settings-bar {
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.settings-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.settings-bar input {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--mono);
+  background: var(--bg);
+  color: var(--text);
+  width: 300px;
+}
+
+.settings-bar button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.settings-bar button:hover {
+  background: var(--accent-bg);
+}
+
 .app-body {
   display: flex;
   flex: 1;
