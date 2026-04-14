@@ -3,8 +3,9 @@ import { v4 as uuidv4 } from "uuid";
 import { requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
 import { findPersistedDuplicateOf } from "./duplicates.js";
-import { embedKnowledgeItem } from "./embedding.js";
+import { embedKnowledgeItem, embedTexts } from "./embedding.js";
 import { detectPossibleDuplicates, qualityFlagsFromRow } from "./quality.js";
+import { cosineSimilarity, decodeEmbedding } from "./vector.js";
 
 const api = new Hono();
 
@@ -14,6 +15,10 @@ interface KnowledgeRow {
   staleness_hint: string; owner: string; related_to: string;
   supersedes: string | null; superseded_by: string | null; duplicate_of: string | null;
   created_at: string; updated_at: string;
+}
+
+interface SemanticKnowledgeRow extends KnowledgeRow {
+  embedding: Buffer | null;
 }
 
 function rowToJson(row: KnowledgeRow) {
@@ -122,7 +127,51 @@ api.get("/knowledge/search", (c) => {
   return c.json({ items: filtered.map((row) => ({ ...summaryFromRow(row), rank: row.rank })), total: tags ? filtered.length : rows.length });
 });
 
-// 3. GET /api/knowledge
+// 3. GET /api/knowledge/semantic-search
+api.get("/knowledge/semantic-search", async (c) => {
+  const q = c.req.query("q");
+  if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
+
+  const project = c.req.query("project");
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "10", 10) || 10, 100);
+  const db = getDb();
+
+  const [queryEmbedding] = await embedTexts([q]);
+  if (!queryEmbedding) {
+    return c.json({ items: [], total: 0 });
+  }
+
+  const params: (string | number)[] = [];
+  const conditions = ["embedding IS NOT NULL", "superseded_by IS NULL"];
+  if (project) {
+    conditions.push("project = ?");
+    params.push(project);
+  }
+
+  const rows = db.prepare(
+    `SELECT * FROM knowledge WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`,
+  ).all(...params) as SemanticKnowledgeRow[];
+
+  const ranked = rows
+    .map((row) => {
+      const storedEmbedding = decodeEmbedding(row.embedding);
+      if (!storedEmbedding) return null;
+
+      return {
+        ...summaryFromRow(row),
+        similarity: cosineSimilarity(queryEmbedding, storedEmbedding),
+      };
+    })
+    .filter((row): row is ReturnType<typeof summaryFromRow> & { similarity: number } => row !== null)
+    .sort((left, right) => right.similarity - left.similarity);
+
+  return c.json({
+    items: ranked.slice(0, limit),
+    total: ranked.length,
+  });
+});
+
+// 4. GET /api/knowledge
 api.get("/knowledge", (c) => {
   const project = c.req.query("project");
   const tags = c.req.query("tags");
@@ -149,7 +198,7 @@ api.get("/knowledge", (c) => {
   return c.json({ items, total: tags ? items.length : countRow.cnt, limit, offset });
 });
 
-// 4. GET /api/knowledge/:id
+// 5. GET /api/knowledge/:id
 api.get("/knowledge/:id", (c) => {
   const db = getDb();
   const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(c.req.param("id")) as KnowledgeRow | undefined;
@@ -157,7 +206,7 @@ api.get("/knowledge/:id", (c) => {
   return c.json(rowToJson(row));
 });
 
-// 5. PATCH /api/knowledge/:id
+// 6. PATCH /api/knowledge/:id
 api.patch("/knowledge/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json();
