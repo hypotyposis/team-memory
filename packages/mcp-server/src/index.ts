@@ -73,7 +73,33 @@ server.tool(
   }
 );
 
-// --- Tool 3: list_knowledge ---
+// --- Tool 3: semantic_search ---
+server.tool(
+  "semantic_search",
+  "Search the team knowledge base using semantic similarity (vector search). Use this when keyword search misses relevant results — it finds conceptually related knowledge even if the exact words differ.",
+  {
+    query: z.string().describe("Natural language query describing what you're looking for"),
+    project: z.string().optional().describe("Filter by project (optional)"),
+    limit: z.number().int().min(1).max(50).optional().describe("Max results to return (default 10, max 50)"),
+  },
+  async (args) => {
+    try {
+      const results = await client.semanticSearch(args);
+      if (results.length === 0) {
+        return { content: [{ type: "text" as const, text: "No semantically similar knowledge items found." }] };
+      }
+      const lines = results.map(
+        (r, i) => `${i + 1}. [${r.id}] (${r.confidence}${r.similarity != null ? `, similarity: ${r.similarity.toFixed(3)}` : ""}) ${r.claim}\n   Project: ${r.project}${r.module ? ` / ${r.module}` : ""} | Tags: ${r.tags.join(", ")} | By: ${r.owner} | ${r.created_at}${r.staleness_hint ? `\n   Staleness: ${r.staleness_hint}` : ""}`
+      );
+      return { content: [{ type: "text" as const, text: `Found ${results.length} semantically similar item(s):\n\n${lines.join("\n\n")}` }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: `Error: ${err}` }], isError: true };
+    }
+  }
+);
+
+// --- Tool 4: list_knowledge ---
+
 server.tool(
   "list_knowledge",
   "Browse knowledge items by project and/or tags without a search query. Use this for cold-start exploration.",
@@ -98,7 +124,7 @@ server.tool(
   }
 );
 
-// --- Tool 4: get_knowledge ---
+// --- Tool 5: get_knowledge ---
 server.tool(
   "get_knowledge",
   "Get the full content of a single knowledge item by ID. Use this after query/list to read the complete detail.",
@@ -131,7 +157,7 @@ server.tool(
   }
 );
 
-// --- Tool 5: update_knowledge ---
+// --- Tool 6: update_knowledge ---
 server.tool(
   "update_knowledge",
   "Update metadata of an existing knowledge item. Only tags, staleness_hint, related_to, and confidence can be changed. To change the claim itself, publish a new item with supersedes.",
