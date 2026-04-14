@@ -1,7 +1,7 @@
 import type { KnowledgeItem, KnowledgeListItem } from "./types";
 import { mockKnowledge } from "./mockData";
 
-const API_BASE = "http://localhost:3457/api";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3456/api";
 const USE_MOCK = false;
 
 interface ListParams {
