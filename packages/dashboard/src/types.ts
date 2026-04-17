@@ -55,12 +55,30 @@ export interface NeverAccessedItem {
   claim: string;
 }
 
+export interface ZeroHitKeyword {
+  normalized_key: string;
+  example_text: string;
+  query_count: number;
+}
+
 export interface ReuseReport {
   total_queries: number;
+  hit_rate: number;
   total_views: number;
   total_items: number;
   never_accessed_pct: number;
-  north_star: number;
+  feedback_coverage: number;
+  north_star_count: number;
+  north_star_pct: number;
   top_reused: TopReusedItem[];
+  top_0hit_keywords: ZeroHitKeyword[];
   never_accessed: NeverAccessedItem[];
+}
+
+export type ReuseSince = "7d" | "30d" | "all";
+
+export interface ReuseReportParams {
+  since?: ReuseSince;
+  project?: string;
+  min_age_days?: number;
 }
