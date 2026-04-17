@@ -135,6 +135,57 @@ publish_knowledge({
 
 Do NOT use `update_knowledge` to change the meaning of a claim. `update_knowledge` is for metadata corrections only (tags, confidence, staleness_hint, related_to).
 
+## Task Sessions (Optional)
+
+Instead of calling `query_knowledge` and `semantic_search` separately at the start of a task, you can open a **task session** with `start_task` and close it with `end_task`. This is a framework-neutral MCP primitive — it is **not** an assignment/queue/workflow/supervisor/backlog system, it is **not** a publish gate, and it is **not** an atomic all-or-nothing transaction. It is purely a way to (a) consolidate the "retrieve what the team already knows" step into one call and (b) group the resulting query / exposure / view / reuse_feedback / publish events under one `task_id` so reuse reports can attribute them back to the same task session.
+
+### Opening a session
+
+```
+start_task({
+  description: "<task description>",
+  project: "<project>",       // optional; unset = no project filter
+  max_matches: 10              // optional; default 10, max 50
+})
+```
+
+- `description` is a caller-provided task description that the backend uses as retrieval input for matching existing knowledge (the backend may apply light query shaping, so do not rely on verbatim-query semantics).
+- If `project` is omitted, no project filter is applied.
+- The response returns a `task_id`, a top-level `retrieval_mode` (`fts` or `hybrid`) indicating which retrieval strategy ran, and `matches[]` with per-item `search_mode` preserving each match's provenance.
+- A 0-hit response still returns a `task_id` with `matches: []`. The caller must always call `end_task` with that `task_id` to close the session.
+
+### During the session
+
+While the session is open, you may pass the `task_id` as an **optional trace-linkage key** to `query_knowledge`, `semantic_search`, `get_knowledge`, and `reuse_feedback`. This is a trace / measurement linkage, not a workflow/assignment/ownership primitive. Calls without `task_id` remain fully supported. `task_id` and `query_context` are parallel — `query_context` captures the query intent behind a specific view, `task_id` ties the view to a session — and are not substitutes.
+
+If you pass a `task_id`, it must reference an active task session you own. Passing an unknown / closed / not-owned `task_id` is rejected (see `end_task` error codes below).
+
+### Closing the session
+
+```
+end_task({
+  task_id: "<from start_task>",
+  status: "completed",         // optional; defaults to "completed". Use "abandoned" if the session was dropped.
+  findings: [ ... ]            // optional; omit or pass [] if the session produced nothing to publish
+})
+```
+
+- `findings[]` **can optionally publish findings using the existing publish contract** — each entry is the same shape as `publish_knowledge`. An `end_task` call with no findings (or `findings: []`) is fully legal and supports pure-exploration or abandoned sessions.
+- Items that are published as part of `end_task` are linked to the session as provenance (task-linked publications) so the reuse report can attribute them back to the originating task.
+- The response returns `published_ids[]` listing any items committed before the session was closed.
+
+### Error responses for `end_task`
+
+| Code | Meaning |
+|------|---------|
+| `404` | The `task_id` is unknown |
+| `403` | The caller does not own the task |
+| `409` | The task is already closed |
+
+### When to use task sessions vs. individual tools
+
+Both paths are first-class and produce the same observability signals. Use task sessions when you want the backend to record `start_task → matches → work → end_task → optional publish` as one measurable unit. Use the individual tools (`query_knowledge`, `get_knowledge`, `reuse_feedback`, `publish_knowledge`) when you have no need to group the events under a session. **Neither path is required before the other** — calls without a `task_id` remain fully supported.
+
 ## Writing Good Claims
 
 A claim should be **one falsifiable conclusion**, not a vague note.

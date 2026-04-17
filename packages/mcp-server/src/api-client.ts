@@ -54,6 +54,7 @@ export interface QueryInput {
   project?: string;
   module?: string;
   limit?: number;
+  task_id?: string;
 }
 
 export interface ListInput {
@@ -66,6 +67,7 @@ export interface SemanticSearchInput {
   query: string;
   project?: string;
   limit?: number;
+  task_id?: string;
 }
 
 export interface UpdateInput {
@@ -82,6 +84,7 @@ export interface ReuseFeedbackInput {
   knowledge_id: string;
   verdict: ReuseVerdict;
   comment?: string;
+  task_id?: string;
 }
 
 export interface ReuseFeedback {
@@ -90,6 +93,42 @@ export interface ReuseFeedback {
   verdict: ReuseVerdict;
   comment: string | null;
   created_at: string;
+}
+
+export type TaskSearchMode = "fts" | "semantic" | "hybrid";
+export type TaskRetrievalMode = "fts" | "hybrid";
+export type TaskStatus = "open" | "completed" | "abandoned";
+export type TaskEndStatus = "completed" | "abandoned";
+
+export interface TaskMatch extends KnowledgeSummary {
+  search_mode: TaskSearchMode;
+}
+
+export interface StartTaskInput {
+  description: string;
+  project?: string;
+  max_matches?: number;
+}
+
+export interface StartTaskResponse {
+  task_id: string;
+  retrieval_mode: TaskRetrievalMode;
+  project?: string;
+  description: string;
+  matches: TaskMatch[];
+}
+
+export interface EndTaskInput {
+  task_id: string;
+  status?: TaskEndStatus;
+  findings?: PublishInput[];
+}
+
+export interface EndTaskResponse {
+  task_id: string;
+  status: TaskEndStatus;
+  published_ids: string[];
+  duration_ms: number;
 }
 
 export class ApiClient {
@@ -129,6 +168,7 @@ export class ApiClient {
     if (input.project) params.set("project", input.project);
     if (input.module) params.set("module", input.module);
     if (input.limit) params.set("limit", String(input.limit));
+    if (input.task_id) params.set("task_id", input.task_id);
 
     const res = await fetch(
       `${this.baseUrl}/api/knowledge/search?${params.toString()}`,
@@ -160,9 +200,14 @@ export class ApiClient {
     return data.items;
   }
 
-  async get(id: string, queryContext?: string): Promise<KnowledgeItem> {
+  async get(
+    id: string,
+    queryContext?: string,
+    taskId?: string
+  ): Promise<KnowledgeItem> {
     const params = new URLSearchParams();
     if (queryContext) params.set("query_context", queryContext);
+    if (taskId) params.set("task_id", taskId);
     const suffix = params.toString() ? `?${params.toString()}` : "";
     const res = await fetch(`${this.baseUrl}/api/knowledge/${id}${suffix}`, {
       headers: this.authHeaders(),
@@ -196,6 +241,7 @@ export class ApiClient {
     params.set("q", input.query);
     if (input.project) params.set("project", input.project);
     if (input.limit) params.set("limit", String(input.limit));
+    if (input.task_id) params.set("task_id", input.task_id);
 
     const res = await fetch(
       `${this.baseUrl}/api/knowledge/semantic-search?${params.toString()}`,
@@ -221,5 +267,35 @@ export class ApiClient {
       throw new Error(`update failed (${res.status}): ${text}`);
     }
     return res.json() as Promise<KnowledgeItem>;
+  }
+
+  async startTask(input: StartTaskInput): Promise<StartTaskResponse> {
+    const res = await fetch(`${this.baseUrl}/api/tasks/start`, {
+      method: "POST",
+      headers: this.writeHeaders(),
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`start_task failed (${res.status}): ${text}`);
+    }
+    return res.json() as Promise<StartTaskResponse>;
+  }
+
+  async endTask(input: EndTaskInput): Promise<EndTaskResponse> {
+    const { task_id, ...body } = input;
+    const res = await fetch(
+      `${this.baseUrl}/api/tasks/${encodeURIComponent(task_id)}/end`,
+      {
+        method: "POST",
+        headers: this.writeHeaders(),
+        body: JSON.stringify(body),
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`end_task failed (${res.status}): ${text}`);
+    }
+    return res.json() as Promise<EndTaskResponse>;
   }
 }

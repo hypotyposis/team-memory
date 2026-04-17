@@ -40,6 +40,16 @@ If you discovered something reusable (architectural insight, verified behavior, 
 - Set `staleness_hint` to describe when this knowledge should be re-verified.
 - If your finding contradicts an existing item, use `supersedes` to link to the old item.
 
+### Task sessions (optional)
+
+Instead of calling `query_knowledge` and `semantic_search` separately, you may open a task session to consolidate retrieval and group the resulting events under one `task_id`:
+
+1. Call `start_task` with a description of what you are about to do. The response returns a `task_id` plus `matches[]` of relevant existing knowledge (a 0-hit response still returns a `task_id` — you must still call `end_task` to close it).
+2. While the session is open, you may pass `task_id` as an optional parameter to `query_knowledge`, `semantic_search`, `get_knowledge`, and `reuse_feedback` so the resulting events are linked to the session. Calls without `task_id` remain fully supported.
+3. Call `end_task` with the `task_id` when the task is done. Optionally pass `findings[]` to publish new knowledge using the same contract as `publish_knowledge`; passing no findings is fully legal.
+
+`start_task` / `end_task` are optional. They are not a publish gate, not a workflow / assignment / ownership primitive, and not an atomic commit. They exist so reuse reports can attribute query / exposure / view / feedback / publish events to the same task. `task_id` is a trace linkage key, parallel to (not a replacement for) `query_context`.
+
 ### Rules
 
 - One claim per knowledge item. Multiple findings = multiple publishes.
