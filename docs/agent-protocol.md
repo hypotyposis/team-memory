@@ -158,7 +158,7 @@ start_task({
 
 While the session is open, you may pass the `task_id` as an **optional trace-linkage key** to `query_knowledge`, `semantic_search`, `get_knowledge`, and `reuse_feedback`. This is a trace / measurement linkage, not a workflow/assignment/ownership primitive. Calls without `task_id` remain fully supported. `task_id` and `query_context` are parallel — `query_context` captures the query intent behind a specific view, `task_id` ties the view to a session — and are not substitutes.
 
-If you pass a `task_id`, it must reference an active task session you own. Passing an unknown / closed / not-owned `task_id` is rejected (see `end_task` error codes below).
+If you pass a `task_id`, it must reference a task session you own. Unknown `task_id`s, or `task_id`s owned by a different caller, are rejected (see `end_task` error codes below). Sessions already in `completed` / `abandoned` state remain valid linkage targets for post-session feedback and late-arriving views — state is not a permission boundary.
 
 ### Closing the session
 

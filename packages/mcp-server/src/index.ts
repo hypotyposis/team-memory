@@ -56,7 +56,7 @@ server.tool(
     project: z.string().optional().describe("Filter by project (optional)"),
     module: z.string().optional().describe("Filter by module (optional)"),
     limit: z.number().int().min(1).max(50).optional().describe("Max results to return (default 10, max 50)"),
-    task_id: z.string().optional().describe("Optional trace/measurement linkage key from a `start_task` session. Not required; omitting it is a fully valid call. If provided, it must reference an active task session you own — an unknown, closed, or not-owned `task_id` is rejected by the backend. This is a trace key, not a workflow/assignment/ownership primitive."),
+    task_id: z.string().optional().describe("Optional trace/measurement linkage to a task session you own. Not required; omitting it is a fully valid call. Unknown `task_id`s or `task_id`s owned by a different caller are rejected (404 / 403). Sessions in `completed` / `abandoned` state remain valid linkage targets — state is not a permission boundary. This is a trace key, not a workflow/assignment/ownership primitive."),
   },
   async (args) => {
     try {
@@ -82,7 +82,7 @@ server.tool(
     query: z.string().describe("Natural language query describing what you're looking for"),
     project: z.string().optional().describe("Filter by project (optional)"),
     limit: z.number().int().min(1).max(50).optional().describe("Max results to return (default 10, max 50)"),
-    task_id: z.string().optional().describe("Optional trace/measurement linkage key from a `start_task` session. Not required; omitting it is a fully valid call. If provided, it must reference an active task session you own — an unknown, closed, or not-owned `task_id` is rejected by the backend. This is a trace key, not a workflow/assignment/ownership primitive."),
+    task_id: z.string().optional().describe("Optional trace/measurement linkage to a task session you own. Not required; omitting it is a fully valid call. Unknown `task_id`s or `task_id`s owned by a different caller are rejected (404 / 403). Sessions in `completed` / `abandoned` state remain valid linkage targets — state is not a permission boundary. This is a trace key, not a workflow/assignment/ownership primitive."),
   },
   async (args) => {
     try {
@@ -133,7 +133,7 @@ server.tool(
   {
     id: z.string().describe("The knowledge item UUID"),
     query_context: z.string().optional().describe("What task or question prompted this view. Strongly recommended when the view follows a query_knowledge or semantic_search call — pass the same question text so reports can tie the view back to the original search intent."),
-    task_id: z.string().optional().describe("Optional trace/measurement linkage key from a `start_task` session. Parallel to `query_context` (not a replacement). Not required; omitting it is a fully valid call. If provided, it must reference an active task session you own — an unknown, closed, or not-owned `task_id` is rejected by the backend. This is a trace key, not a workflow/assignment/ownership primitive."),
+    task_id: z.string().optional().describe("Optional trace/measurement linkage to a task session you own. Parallel to `query_context` (not a replacement). Not required; omitting it is a fully valid call. Unknown `task_id`s or `task_id`s owned by a different caller are rejected (404 / 403). Sessions in `completed` / `abandoned` state remain valid linkage targets — state is not a permission boundary. This is a trace key, not a workflow/assignment/ownership primitive."),
   },
   async (args) => {
     try {
@@ -169,7 +169,7 @@ server.tool(
     knowledge_id: z.string().describe("The knowledge item UUID you are giving feedback on"),
     verdict: z.enum(["useful", "not_useful", "outdated"]).describe("useful = it helped / saved me work; not_useful = irrelevant or wrong; outdated = used to be true but no longer applies"),
     comment: z.string().optional().describe("Optional one-line note (e.g. what was wrong, or how you used it)"),
-    task_id: z.string().optional().describe("Optional trace/measurement linkage key from a `start_task` session. Not required; omitting it is a fully valid call. If provided, it must reference an active task session you own — an unknown, closed, or not-owned `task_id` is rejected by the backend. This is a trace key, not a workflow/assignment/ownership primitive."),
+    task_id: z.string().optional().describe("Optional trace/measurement linkage to a task session you own. Not required; omitting it is a fully valid call. Unknown `task_id`s or `task_id`s owned by a different caller are rejected (404 / 403). Sessions in `completed` / `abandoned` state remain valid linkage targets — state is not a permission boundary. This is a trace key, not a workflow/assignment/ownership primitive."),
   },
   async (args) => {
     try {
@@ -274,8 +274,9 @@ server.tool(
   async (args) => {
     try {
       const result = await client.endTask(args);
+      const totalFindings = args.findings?.length ?? 0;
       const parts = [
-        `Task session closed.`,
+        result.error ? `Task session closed (with partial-publish failure).` : `Task session closed.`,
         ``,
         `Task ID: ${result.task_id}`,
         `Status: ${result.status}`,
@@ -284,8 +285,23 @@ server.tool(
       if (result.published_ids.length === 0) {
         parts.push(``, `No findings were published.`);
       } else {
-        parts.push(``, `Published ${result.published_ids.length} finding(s):`);
+        const heading = result.error
+          ? `Published ${result.published_ids.length} of ${totalFindings} finding(s) before failure:`
+          : `Published ${result.published_ids.length} finding(s):`;
+        parts.push(``, heading);
         result.published_ids.forEach((id, i) => parts.push(`  ${i + 1}. ${id}`));
+      }
+      if (result.error) {
+        parts.push(
+          ``,
+          `Publish failed on finding index ${result.error.failed_index} (${totalFindings > 0 ? `out of ${totalFindings}` : "partial"}).`,
+          `  Code:           ${result.error.code}`,
+          `  Publish status: ${result.error.publish_status}`,
+          `  Publish error:  ${result.error.publish_error}`,
+          ``,
+          `Note: the session is already closed — re-calling \`end_task\` will return 409. To publish the remaining findings, call \`publish_knowledge\` directly for each one.`,
+        );
+        return { content: [{ type: "text" as const, text: parts.join("\n") }], isError: true };
       }
       return { content: [{ type: "text" as const, text: parts.join("\n") }] };
     } catch (err) {
