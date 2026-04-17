@@ -24,6 +24,11 @@ interface SemanticKnowledgeRow extends KnowledgeRow {
 type SearchMode = "fts" | "semantic" | "hybrid";
 type ReuseVerdict = "useful" | "not_useful" | "outdated";
 
+interface TrackedSearchItem {
+  id: string;
+  project: string;
+}
+
 // Prefer semantic signal, but give a small bonus when a row matches both worlds.
 const HYBRID_FTS_WEIGHT = 0.35;
 const HYBRID_SEMANTIC_WEIGHT = 0.65;
@@ -163,39 +168,68 @@ async function runSemanticCandidates(
 const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
 const VALID_REUSE_VERDICTS = new Set<ReuseVerdict>(["useful", "not_useful", "outdated"]);
 
-function recordExposureEvents(
+function recordSearchEvents(
   db: ReturnType<typeof getDb>,
   owner: string,
-  knowledgeIds: string[],
-  queryContext: string,
+  input: {
+    items: TrackedSearchItem[];
+    project: string | null;
+    queryText: string;
+    searchMode: SearchMode;
+  },
 ): void {
-  if (knowledgeIds.length === 0) return;
-
   const requestId = uuidv4();
-  const insert = db.prepare(
-    `INSERT INTO usage_events (knowledge_id, owner, event_type, request_id, query_context)
-     VALUES (?, ?, 'exposure', ?, ?)`,
+  const insertQuery = db.prepare(
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (NULL, ?, 'query', ?, ?, ?, ?, ?, NULL)`,
+  );
+  const insertExposure = db.prepare(
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (?, ?, 'exposure', ?, NULL, NULL, ?, ?, ?)`,
   );
 
-  const transaction = db.transaction((ids: string[]) => {
-    for (const knowledgeId of ids) {
-      insert.run(knowledgeId, owner, requestId, queryContext);
+  const transaction = db.transaction((items: TrackedSearchItem[]) => {
+    insertQuery.run(
+      owner,
+      requestId,
+      input.queryText,
+      items.length,
+      input.project ?? "",
+      input.searchMode,
+    );
+
+    for (const item of items) {
+      insertExposure.run(
+        item.id,
+        owner,
+        requestId,
+        item.project,
+        input.searchMode,
+        input.queryText,
+      );
     }
   });
 
-  transaction(knowledgeIds);
+  transaction(input.items);
 }
 
 function recordViewEvent(
   db: ReturnType<typeof getDb>,
   owner: string,
   knowledgeId: string,
+  project: string,
   queryContext: string | null,
 ): void {
   db.prepare(
-    `INSERT INTO usage_events (knowledge_id, owner, event_type, request_id, query_context)
-     VALUES (?, ?, 'view', NULL, ?)`,
-  ).run(knowledgeId, owner, queryContext);
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (?, ?, 'view', NULL, NULL, NULL, ?, NULL, ?)`,
+  ).run(knowledgeId, owner, project, queryContext);
 }
 
 // 1. POST /api/knowledge
@@ -337,7 +371,12 @@ api.get("/knowledge/search", async (c) => {
     .map(({ hybrid_score: _hybridScore, fts_score: _ftsScore, semantic_score: _semanticScore, ...item }) => item);
 
   if (maybeAuth) {
-    recordExposureEvents(db, maybeAuth.owner, items.map((item) => item.id), q);
+    recordSearchEvents(db, maybeAuth.owner, {
+      items: items.map((item) => ({ id: item.id, project: item.project })),
+      project: project ?? null,
+      queryText: q,
+      searchMode: "hybrid",
+    });
   }
 
   return c.json({ items, total: merged.size });
@@ -356,6 +395,14 @@ api.get("/knowledge/semantic-search", async (c) => {
 
   const [queryEmbedding] = await embedTexts([q]);
   if (!queryEmbedding) {
+    if (maybeAuth) {
+      recordSearchEvents(db, maybeAuth.owner, {
+        items: [],
+        project: project ?? null,
+        queryText: q,
+        searchMode: "semantic",
+      });
+    }
     return c.json({ items: [], total: 0 });
   }
 
@@ -385,7 +432,12 @@ api.get("/knowledge/semantic-search", async (c) => {
 
   const items = ranked.slice(0, limit);
   if (maybeAuth) {
-    recordExposureEvents(db, maybeAuth.owner, items.map((item) => item.id), q);
+    recordSearchEvents(db, maybeAuth.owner, {
+      items: items.map((item) => ({ id: item.id, project: item.project })),
+      project: project ?? null,
+      queryText: q,
+      searchMode: "semantic",
+    });
   }
 
   return c.json({ items, total: ranked.length });
@@ -426,7 +478,7 @@ api.get("/knowledge/:id", (c) => {
   const maybeAuth = getOptionalApiAuth(c);
   if (maybeAuth instanceof Response) return maybeAuth;
   if (maybeAuth) {
-    recordViewEvent(db, maybeAuth.owner, row.id, c.req.query("query_context") ?? null);
+    recordViewEvent(db, maybeAuth.owner, row.id, row.project, c.req.query("query_context") ?? null);
   }
   return c.json(rowToJson(row));
 });
@@ -438,12 +490,14 @@ api.get("/reports/reuse", (c) => {
     "SELECT id, claim, created_at FROM knowledge ORDER BY created_at ASC",
   ).all() as Array<{ id: string; claim: string; created_at: string }>;
   const usageRows = db.prepare(
-    "SELECT knowledge_id, owner, event_type, request_id FROM usage_events",
+    `SELECT knowledge_id, owner, event_type, request_id, result_count
+     FROM usage_events`,
   ).all() as Array<{
-    knowledge_id: string;
+    knowledge_id: string | null;
     owner: string;
-    event_type: "exposure" | "view";
+    event_type: "query" | "exposure" | "view";
     request_id: string | null;
+    result_count: number | null;
   }>;
   const feedbackRows = db.prepare(
     "SELECT knowledge_id, owner, verdict FROM reuse_feedback",
@@ -477,14 +531,23 @@ api.get("/reports/reuse", (c) => {
     });
   }
 
-  const queryIds = new Set<string>();
+  let totalQueries = 0;
+  let queriesWithResult = 0;
   for (const row of usageRows) {
+    if (row.event_type === "query") {
+      totalQueries += 1;
+      if ((row.result_count ?? 0) > 0) {
+        queriesWithResult += 1;
+      }
+      continue;
+    }
+
+    if (!row.knowledge_id) continue;
     const item = stats.get(row.knowledge_id);
     if (!item) continue;
 
     if (row.event_type === "exposure") {
       item.exposure_count += 1;
-      if (row.request_id) queryIds.add(row.request_id);
       continue;
     }
 
@@ -564,14 +627,18 @@ api.get("/reports/reuse", (c) => {
     .map(({ reuse_score: _reuseScore, ...item }) => item);
 
   const neverAccessedPct = totalItems === 0 ? 0 : neverAccessed.length / totalItems;
-  const northStar = totalItems === 0 ? 0 : northStarCount / totalItems;
+  const northStarPct = totalItems === 0 ? 0 : northStarCount / totalItems;
+  const hitRate = totalQueries === 0 ? 0 : queriesWithResult / totalQueries;
 
   return c.json({
-    total_queries: queryIds.size,
+    total_queries: totalQueries,
+    hit_rate: hitRate,
     total_views: usageRows.filter((row) => row.event_type === "view").length,
     total_items: totalItems,
     never_accessed_pct: neverAccessedPct,
-    north_star: northStar,
+    north_star: northStarPct,
+    north_star_count: northStarCount,
+    north_star_pct: northStarPct,
     top_reused: topReused,
     never_accessed: neverAccessed,
   });
