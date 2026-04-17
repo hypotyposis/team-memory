@@ -17,7 +17,7 @@ For recommended agent workflows (when to publish, when to call `reuse_feedback`,
 
 ## Authentication
 
-The backend uses a simple Bearer token model. Tokens are minted with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner>`) and identify an owner plus optional default project.
+The backend uses a simple Bearer token model. Tokens are minted with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner>`) and identify an owner plus optional default-project namespace (`default_projects`).
 
 Three auth postures show up below:
 
@@ -131,7 +131,7 @@ List knowledge items. No auth (unauthenticated listing; does not record `usage_e
 
 | Param | Meaning |
 |---|---|
-| `project` | Filter by project |
+| `project` | Filter by project. When omitted on an authenticated request, the caller's API-key `default_projects` scope applies. Use `*` to opt out back to unscoped reads. An empty query value (`?project=`) is treated as a literal override to the project name `""`, not as omission/inheritance. |
 | `owner` | Filter by owner |
 | `tags` | Comma-separated; items match if they carry **any** of the listed tags (OR semantics) |
 | `include_superseded` | `true` to include superseded entries (default `false`) |
@@ -194,7 +194,7 @@ User text is sanitized before it reaches the FTS5 `MATCH` clause: tokens are ext
 | Param | Meaning |
 |---|---|
 | `q` | **Required.** Search text. |
-| `project` | Filter by project |
+| `project` | Filter by project. When omitted on an authenticated request, the caller's API-key `default_projects` scope applies. Use `*` to opt out back to unscoped reads. An empty query value (`?project=`) is treated as a literal override to the project name `""`, not as omission/inheritance. |
 | `module` | Filter by module |
 | `tags` | Comma-separated; items match if they carry **any** of the listed tags (OR semantics) |
 | `include_superseded` | `true` to include superseded entries |
@@ -223,7 +223,7 @@ Embedding-based similarity search. Optional auth (read tracking); optional `task
 | Param | Meaning |
 |---|---|
 | `q` | **Required.** Natural-language query. |
-| `project` | Filter by project |
+| `project` | Filter by project. When omitted on an authenticated request, the caller's API-key `default_projects` scope applies. Use `*` to opt out back to unscoped reads. An empty query value (`?project=`) is treated as a literal override to the project name `""`, not as omission/inheritance. |
 | `limit` | Integer, defaults to 10 (capped at 100) |
 | `task_id` | Optional task session linkage |
 
@@ -290,7 +290,7 @@ Open a task session. **Auth required.**
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `description` | string | yes | Non-empty after trim. Can contain arbitrary punctuation and operator-like words; FTS sanitization is internal. |
-| `project` | string | no | Scope hybrid search to a project |
+| `project` | string | no | Scope hybrid search to a project. When omitted, authenticated callers inherit their API-key `default_projects` scope. Use `"*"` to opt out back to unscoped retrieval. An empty string is treated as the literal project name `""`, not as omission/inheritance. |
 | `max_matches` | integer | no | Range `[1, 100]` at the REST layer, default `10`. The MCP bridge exposes a narrower `[1, 50]` cap — agents calling `start_task` via MCP will hit a client-side validation error above 50. Direct REST callers can use the full `[1, 100]` range. |
 
 The session is persisted with the **raw** description (before sanitization). Hybrid search runs with `search_mode: "hybrid"` and is recorded as a `query` event with `task_id` linked.
@@ -319,6 +319,8 @@ The session is persisted with the **raw** description (before sanitization). Hyb
 ```
 
 Match rows mirror the shape returned by `GET /api/knowledge/search` — each row is a knowledge-row summary plus `search_mode` and `score`. 0-hit sessions still return `201` with `task_id` and `matches: []`. Failed-embedding queries still return `201` on the FTS path; the query row records the failure for reuse-report observability.
+
+The response `project` field echoes the effective single-project scope label when one exists (explicit project or a single inherited default project). It is `null` for multi-project inherited scope and fully unscoped sessions.
 
 **Errors**
 

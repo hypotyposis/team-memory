@@ -184,6 +184,7 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS api_keys (
       key         TEXT PRIMARY KEY,
       owner       TEXT NOT NULL,
+      default_projects TEXT,
       created_at  TEXT NOT NULL,
       revoked_at  TEXT
     );
@@ -235,6 +236,7 @@ export function getDb(): Database.Database {
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
   ensureColumn(_db, "knowledge", "embedding", "BLOB");
+  ensureColumn(_db, "api_keys", "default_projects", "TEXT");
   ensureColumn(_db, "reuse_feedback", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_reuse_feedback_task_id ON reuse_feedback(task_id)");
   cleanupFalsePositiveDuplicateOf(_db);
