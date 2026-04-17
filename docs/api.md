@@ -17,7 +17,7 @@ For recommended agent workflows (when to publish, when to call `reuse_feedback`,
 
 ## Authentication
 
-The backend uses a simple Bearer token model. Tokens are minted with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner> --projects alpha,beta`) and identify an owner plus a default-project namespace (`default_projects`). The `create` and `update-key` subcommands require an explicit scope flag — either `--projects <names>` or `--unscoped`; there is no silent default to "unscoped".
+The backend uses a simple Bearer token model. Tokens are minted with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner> --projects alpha,beta`) and identify an owner plus an explicit scope posture: either a default-project namespace (`default_projects`: a non-empty `string[]`) when minted with `--projects <names>`, or no project restriction (`default_projects` is `null`) when minted with `--unscoped`. The `create` and `update-key` subcommands require one of those two flags; there is no silent default.
 
 Three auth postures show up below:
 

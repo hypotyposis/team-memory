@@ -53,7 +53,7 @@ jobs:
         id: apikey
         working-directory: packages/backend
         run: |
-          OUTPUT=$(npx tsx src/cli.ts create e2e-test)
+          OUTPUT=$(npx tsx src/cli.ts create e2e-test --unscoped)
           KEY=$(echo "$OUTPUT" | grep '^key=' | cut -d= -f2)
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
