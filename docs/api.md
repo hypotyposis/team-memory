@@ -262,7 +262,7 @@ Open a task session. **Auth required.**
 |---|---|---|---|
 | `description` | string | yes | Non-empty after trim. Can contain arbitrary punctuation and operator-like words; FTS sanitization is internal. |
 | `project` | string | no | Scope hybrid search to a project |
-| `max_matches` | integer | no | Range `[1, 100]`, default `10` |
+| `max_matches` | integer | no | Range `[1, 100]` at the REST layer, default `10`. The MCP bridge exposes a narrower `[1, 50]` cap — agents calling `start_task` via MCP will hit a client-side validation error above 50. Direct REST callers can use the full `[1, 100]` range. |
 
 The session is persisted with the **raw** description (before sanitization). Hybrid search runs with `search_mode: "hybrid"` and is recorded as a `query` event with `task_id` linked.
 
