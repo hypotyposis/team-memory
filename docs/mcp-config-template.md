@@ -64,7 +64,7 @@ Once connected, your agent will have access to:
 | Tool | Purpose |
 |------|---------|
 | `publish_knowledge` | Share a finding with the team |
-| `query_knowledge` | Search knowledge by keywords (FTS5) — produces a `query` event; each returned item is logged as an `exposure` |
+| `query_knowledge` | Search knowledge by keywords (FTS5). Each returned item is logged as an `exposure` row (sharing a `request_id`); the query count is derived from distinct `request_id`s |
 | `semantic_search` | Search knowledge by meaning using vector similarity — finds conceptually related items even when exact words differ. Same event semantics as `query_knowledge` |
 | `list_knowledge` | Browse knowledge by project/tags |
 | `get_knowledge` | Read full detail of a knowledge item — produces a `view` event. Pass optional `query_context` to label why you opened it |
