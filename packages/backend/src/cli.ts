@@ -3,25 +3,51 @@ import { closeDb, getDb } from "./db.js";
 
 function usage(): never {
   console.error(`Usage:
-  npm run keys -- create <owner> [--projects alpha,beta]
+  npm run keys -- create <owner> (--projects alpha,beta | --unscoped)
   npm run keys -- list
-  npm run keys -- update-key <api_key> --projects alpha,beta
-  npm run keys -- revoke <api_key>`);
+  npm run keys -- update-key <api_key> (--projects alpha,beta | --unscoped)
+  npm run keys -- revoke <api_key>
+
+Scope flags are required on create/update-key — silently minting an unscoped key is not allowed.
+Pass explicit project names with --projects, or --unscoped to opt out of namespacing.`);
   process.exit(1);
 }
 
-function parseProjectsArg(value: string | undefined): string[] | null {
-  if (value === undefined) usage();
-  if (value === "" || value === "*") return null;
+function fail(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
 
-  const projects = Array.from(new Set(
-    value
-      .split(",")
-      .map((project) => project.trim())
-      .filter(Boolean),
+type ScopeFlags = { projects: string[] | null };
+
+function parseProjectsList(raw: string | undefined): string[] {
+  if (raw === undefined) fail("--projects requires a value, e.g. --projects alpha,beta");
+  const list = Array.from(new Set(
+    raw.split(",").map((project) => project.trim()).filter(Boolean),
   ));
+  if (list.length === 0) {
+    fail("--projects value is empty after parsing — pass at least one project name, or use --unscoped");
+  }
+  if (list.some((p) => p === "*")) {
+    fail("--projects does not accept '*' — use --unscoped to opt out of project scoping");
+  }
+  return list;
+}
 
-  return projects.length > 0 ? projects : null;
+function parseScopeFlags(args: string[]): ScopeFlags {
+  const projectsIdx = args.indexOf("--projects");
+  const unscopedIdx = args.indexOf("--unscoped");
+  const hasProjects = projectsIdx >= 0;
+  const hasUnscoped = unscopedIdx >= 0;
+
+  if (hasProjects && hasUnscoped) {
+    fail("--projects and --unscoped are mutually exclusive — pick exactly one");
+  }
+  if (!hasProjects && !hasUnscoped) {
+    fail("scope is required — pass --projects <names> or --unscoped");
+  }
+  if (hasUnscoped) return { projects: null };
+  return { projects: parseProjectsList(args[projectsIdx + 1]) };
 }
 
 function encodeProjects(projects: string[] | null): string | null {
@@ -120,8 +146,7 @@ try {
   switch (command) {
     case "create": {
       if (!firstArg) usage();
-      const flagIndex = rest.indexOf("--projects");
-      const projects = flagIndex >= 0 ? parseProjectsArg(rest[flagIndex + 1]) : null;
+      const { projects } = parseScopeFlags(rest);
       createKey(firstArg, projects);
       break;
     }
@@ -130,9 +155,8 @@ try {
       break;
     case "update-key": {
       if (!firstArg) usage();
-      const flagIndex = rest.indexOf("--projects");
-      if (flagIndex < 0) usage();
-      updateKeyProjects(firstArg, parseProjectsArg(rest[flagIndex + 1]));
+      const { projects } = parseScopeFlags(rest);
+      updateKeyProjects(firstArg, projects);
       break;
     }
     case "revoke":

@@ -7,6 +7,7 @@ This document provides ready-to-use configuration snippets for connecting an age
 1. The Team Memory backend is running (default: `http://localhost:3456`). The easiest way is the pre-built Docker image — see **[Docker self-host](#docker-self-host)** below.
 2. The MCP server package is built: `cd packages/mcp-server && npm install && npm run build`
 3. **Node.js 22** — the `command` in your MCP config must use the same Node version that built `better-sqlite3`. If you have multiple Node versions (e.g., nvm), use an absolute path to avoid ABI mismatch crashes. Or skip this entire class of problem by running the backend via the Docker image below.
+4. **Source-checkout self-deploy only (skip if using Docker):** after every `git pull` on `main`, rebuild the backend before minting keys: `npm run build --workspace=packages/backend`. A stale `dist/cli.js` from before a flag-schema change can silently reject or ignore new flags — for example, pre-#55 builds accept `--projects` but drop it without warning, producing unscoped keys. This step is unnecessary when running the Docker image, which ships a pre-built CLI.
 
 ## Docker self-host
 
@@ -63,10 +64,10 @@ The image honors the same env vars as a local `node` process. Override any of th
 
 ### API keys inside Docker
 
-The backend CLI (`npm run keys create <owner>`) works the same way inside the container:
+The backend CLI (`npm run keys create <owner> --projects <names>`) works the same way inside the container. The `create` and `update-key` subcommands require an explicit scope flag — pass `--projects alpha,beta` to scope the key, or `--unscoped` to mint a key with no project restriction:
 
 ```bash
-docker exec -it team-memory node packages/backend/dist/cli.js create my-agent-name
+docker exec -it team-memory node packages/backend/dist/cli.js create my-agent-name --projects hackathon
 ```
 
 Copy the printed `tm_...` key into `TEAM_MEMORY_API_KEY` in your MCP config.
