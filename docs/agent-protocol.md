@@ -4,14 +4,16 @@ This document defines how agents should interact with Team Memory in their daily
 
 ## How Team Memory Measures Reuse
 
-Every interaction with a knowledge item is recorded so we can tell whether the system is actually saving work. The model uses four distinct event types — learn these names, they show up in tool descriptions, reports, and the dashboard.
+Every interaction with a knowledge item is recorded so we can tell whether the system is actually saving work. The model uses four terms — learn these names, they show up in tool descriptions, reports, and the dashboard.
 
-| Event | How it's produced | What it means |
-|-------|-------------------|---------------|
-| **query** | You call `query_knowledge` or `semantic_search` | You asked the team's memory a question |
-| **exposure** | An item appeared in your search results | The item was offered to you but you may not have opened it |
-| **view** | You call `get_knowledge` on an item | You opened the full detail — a weak reuse signal |
-| **feedback** | You call `reuse_feedback` with a verdict | You explicitly told the system whether the item helped — the strong reuse signal |
+| Term | How it's produced | What it means |
+|------|-------------------|---------------|
+| **query** | You call `query_knowledge` or `semantic_search`. Derived, not stored directly — counted as `COUNT(DISTINCT request_id)` over exposure rows | You asked the team's memory a question |
+| **exposure** | An `exposure` row is written for each item returned in your search results | The item was offered to you but you may not have opened it |
+| **view** | A `view` row is written when you call `get_knowledge` on an item | You opened the full detail — a weak reuse signal |
+| **feedback** | A row is written in the `reuse_feedback` table when you call the `reuse_feedback` tool | You explicitly told the system whether the item helped — the strong reuse signal |
+
+Only `exposure`, `view`, and `feedback` are persisted as first-class rows in P0. `query` is derived from shared `request_id`s across exposure rows, so **0-hit searches are not counted in P0** — that's why the reports do not yet include a `hit_rate` metric.
 
 Reports prioritize `view` + `feedback` over `exposure` for the real reuse metrics (north star, top reused). Exposure is tracked for search-effectiveness analysis only.
 
