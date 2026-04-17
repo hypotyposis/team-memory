@@ -13,18 +13,17 @@ Instead of every agent keeping private notes and repeating the same repo analysi
 
 ## What This Repo Contains
 
-Phase 1 ships four pieces:
-
 ```text
 Agent / CLI
     |
     v
-packages/mcp-server      MCP tools for agents
+packages/mcp-server      MCP tools for agents (publish / query / semantic / reuse_feedback / start_task / end_task / ...)
     |
     v
-packages/backend         REST API + SQLite + FTS5 knowledge store
+packages/backend         REST API + SQLite + FTS5 + provider-agnostic semantic search
+                         task sessions, reuse tracking, append-only supersede model
     |
-    +--> packages/dashboard   Read-only web UI for humans
+    +--> packages/dashboard   Read-only web UI for humans, including a Reuse tab
     |
     +--> e2e/scripts          Validation scripts for the main reuse flow
 ```
@@ -33,10 +32,11 @@ packages/backend         REST API + SQLite + FTS5 knowledge store
 
 | Path | Purpose |
 | --- | --- |
-| `packages/backend` | Hono API server, SQLite storage, FTS5 search, append-only supersede model |
-| `packages/mcp-server` | 5 MCP tools that proxy agent calls to the backend |
-| `packages/dashboard` | Read-only dashboard for browsing, filtering, and inspecting knowledge items |
-| `e2e/scripts` | Demo and smoke scripts that validate publish -> query -> get flows |
+| `packages/backend` | Hono API server, SQLite storage, FTS5 + vector-hybrid search, task sessions, reuse tracking, append-only supersede model, admin key CLI |
+| `packages/mcp-server` | MCP tools that proxy agent calls to the backend (see [MCP Tools](#mcp-tools) below) |
+| `packages/dashboard` | Read-only dashboard for browsing, filtering, and inspecting knowledge items; includes a Reuse tab for team reuse metrics |
+| `e2e/scripts` | Demo and smoke scripts that validate publish -> query -> get -> feedback flows |
+| `docs/` | Agent behavior protocol, MCP config template, API reference (`docs/api.md`) |
 | `CONTRIBUTING.md` | GitHub workflow, branch naming, review expectations |
 
 ## Core Concept: Knowledge Items
@@ -58,31 +58,47 @@ Important behavior:
 - Core facts are append-only.
 - If a fact changes, publish a new item and point `supersedes` at the old one.
 - Search/list hide superseded entries by default.
-- Agents are expected to `query_knowledge` before work and `publish_knowledge` after work.
+- Agents are expected to query the team's memory before starting work (via `start_task` or `query_knowledge` / `semantic_search`) and publish any reusable finding after it (via `end_task({ findings })` or `publish_knowledge`).
+- Reading and writing are both measurable: `view` and `reuse_feedback` records feed the reuse report.
 
 ## MCP Tools
 
-The MCP bridge exposes five tools:
+The MCP bridge exposes nine tools, grouped by purpose:
 
-1. `publish_knowledge`
-2. `query_knowledge`
-3. `list_knowledge`
-4. `get_knowledge`
-5. `update_knowledge`
+**Knowledge reads**
 
-`update_knowledge` is metadata-only. If the actual claim changes, publish a new item instead of mutating history.
+1. `query_knowledge` — FTS5 keyword search
+2. `semantic_search` — embedding-based similarity search
+3. `list_knowledge` — browse by project / owner / tag
+4. `get_knowledge` — open a specific item (emits a `view` event; accepts optional `query_context` and `task_id`)
+
+**Knowledge writes**
+
+5. `publish_knowledge` — publish a structured claim (supports `supersedes` for facts that change)
+6. `update_knowledge` — metadata-only update (tags, confidence, staleness_hint, related_to). If a claim's meaning changes, publish a new item and point `supersedes` at the old one — do not mutate history.
+
+**Reuse signal**
+
+7. `reuse_feedback` — after opening an item, tell the system whether it was `useful`, `not_useful`, or `outdated`. This is the strong reuse signal that reports prioritize over raw views.
+
+**Task sessions** (framework-neutral measurement primitive)
+
+8. `start_task` — open a task session, run a hybrid search on the description, return `task_id` + matches. Even 0-hit sessions return a `task_id`.
+9. `end_task` — close a task session; optionally accepts `findings[]` and publishes each as a knowledge item linked to the task via `task_publications`.
+
+Once a task is open, agents can pass its `task_id` to any knowledge-read or feedback call to tie that interaction to the session. `completed` / `abandoned` task ids remain valid linkage targets for follow-up reads.
 
 ## REST API
 
-The backend exposes five endpoints under `/api`:
+The backend exposes the surface under `/api`:
 
-- `POST /api/knowledge`
-- `GET /api/knowledge/search?q=...`
-- `GET /api/knowledge`
-- `GET /api/knowledge/:id`
-- `PATCH /api/knowledge/:id`
+- Knowledge: `POST /api/knowledge`, `GET /api/knowledge`, `GET /api/knowledge/:id`, `PATCH /api/knowledge/:id`, `GET /api/knowledge/search`, `GET /api/knowledge/semantic-search`
+- Reuse feedback: `POST /api/knowledge/:id/feedback`
+- Task sessions: `POST /api/tasks/start`, `POST /api/tasks/:task_id/end`
+- Reports: `GET /api/reports/reuse`
+- Health: `GET /health`
 
-The model is intentionally small: publish, browse/search, inspect, and update metadata.
+See [`docs/api.md`](docs/api.md) for the full request/response reference, query parameters, error codes, and the `task_id?` passthrough semantics.
 
 ## Quick Start
 
@@ -192,14 +208,16 @@ curl "http://localhost:3460/api/knowledge/search?q=deploy&project=infer-monorepo
 
 ### For agents
 
-Recommended workflow:
+Recommended workflow (see [`docs/agent-protocol.md`](docs/agent-protocol.md) for the canonical version):
 
-1. Before starting work, call `query_knowledge` or `list_knowledge`.
-2. Read the best match with `get_knowledge`.
-3. Reuse that context in the new task instead of redoing the same analysis.
-4. After finishing, `publish_knowledge` for any reusable finding.
+1. Before starting a task, call `start_task({ description, project })`. The response carries a `task_id` plus the best existing matches for your task.
+2. If a match looks relevant, open it with `get_knowledge({ id, task_id, query_context })`.
+3. After you know whether the item helped, call `reuse_feedback({ knowledge_id, verdict, task_id })` — `useful` / `not_useful` / `outdated`.
+4. When done, call `end_task({ task_id, status, findings? })`. Any reusable conclusions you pass in `findings[]` get published as knowledge items linked to this task via `task_publications`.
 
-The MVP success condition for this project is simple: Agent B should query Agent A's published knowledge and skip one round of repeated research.
+`start_task` / `end_task` are a framework-neutral **measurement primitive**, not a workflow engine — they exist so reports can count "how often did querying the team's memory before work actually save a round of re-analysis?". Agents that don't open sessions still use `query_knowledge` / `semantic_search` / `get_knowledge` / `publish_knowledge` / `reuse_feedback` directly.
+
+The success condition for this project is simple: Agent B should query Agent A's published knowledge and skip one round of repeated research — and the team should be able to see that happen in the Reuse tab.
 
 ### For humans
 
@@ -215,27 +233,31 @@ This is intentionally read-only in Phase 1.
 
 The repo includes scripts for validating the main flow:
 
-- HTTP path: publish -> search -> get
-- MCP path: `publish_knowledge` -> `query_knowledge` -> `get_knowledge`
+- HTTP path: publish → search → get → feedback
+- MCP path: `publish_knowledge` → `query_knowledge` → `get_knowledge` → `reuse_feedback`
+- Reuse loop: `e2e/scripts/reuse-loop.ts` exercises the end-to-end `start_task` → `get_knowledge` → `reuse_feedback` → `end_task` sequence and asserts the report surface
 
 See `e2e/scripts/` for the current demo and smoke scripts.
 
-## Current Phase 1 Status
+## Current Status
 
 Implemented:
 
 - backend knowledge store + REST API
-- MCP bridge with 5 tools
-- read-only dashboard
-- E2E validation scripts
+- MCP bridge (9 tools)
+- read-only dashboard with Reuse tab
+- E2E validation scripts (publish / query / view / feedback / task-session loops)
+- API-key authentication and key-management CLI
+- Hybrid search: FTS5 + provider-agnostic semantic embeddings (`EMBEDDING_API_KEY` / `EMBEDDING_API_BASE` / `EMBEDDING_MODEL`)
+- Duplicate detection at publish time (configurable thresholds)
+- Reuse tracking: `query` / `exposure` / `view` events plus first-class `reuse_feedback`; reuse report at `GET /api/reports/reuse`
+- Task sessions: `start_task` / `end_task` primitive, `task_id?` passthrough on reads + feedback, `task_publications` provenance
 
 Still intentionally limited:
 
-- no auth or RBAC
-- no vector search
 - no subscription/notification layer
-- no workflow engine or task management
-- no repo-root dev orchestration yet
+- no workflow engine — task sessions are a measurement primitive, not an orchestration runtime
+- no repo-root dev orchestration beyond the quick-start scripts
 
 ## Collaboration Workflow
 
