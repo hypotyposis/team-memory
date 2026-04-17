@@ -235,6 +235,49 @@ test("authenticated semantic search writes exposure events with query context", 
   assert.equal(exposureRow!.query_context, "usage mirroring");
 });
 
+test("authenticated semantic search still writes a query row when query embedding generation fails", async () => {
+  const apiKey = createApiKey("SemanticFallback");
+
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ error: "provider unavailable" }),
+    {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    },
+  )) as typeof globalThis.fetch;
+
+  const response = await app.request(
+    "http://localhost/api/knowledge/semantic-search?q=semantic%20fallback&project=team-memory",
+    {
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as { items: unknown[]; total: number };
+  assert.equal(body.total, 0);
+  assert.deepEqual(body.items, []);
+
+  const events = getDb().prepare(
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count,
+            project, search_mode, query_context
+     FROM usage_events`,
+  ).all() as UsageEventRow[];
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.knowledge_id, null);
+  assert.equal(events[0]!.owner, "SemanticFallback");
+  assert.equal(events[0]!.event_type, "query");
+  assert.ok(events[0]!.request_id);
+  assert.equal(events[0]!.query_text, "semantic fallback");
+  assert.equal(events[0]!.result_count, 0);
+  assert.equal(events[0]!.project, "team-memory");
+  assert.equal(events[0]!.search_mode, "semantic");
+  assert.equal(events[0]!.query_context, null);
+});
+
 test("authenticated get_knowledge writes a view event and stores query_context", async () => {
   const db = getDb();
   insertKnowledgeRow(db, {

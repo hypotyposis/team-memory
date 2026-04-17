@@ -395,6 +395,14 @@ api.get("/knowledge/semantic-search", async (c) => {
 
   const [queryEmbedding] = await embedTexts([q]);
   if (!queryEmbedding) {
+    if (maybeAuth) {
+      recordSearchEvents(db, maybeAuth.owner, {
+        items: [],
+        project: project ?? null,
+        queryText: q,
+        searchMode: "semantic",
+      });
+    }
     return c.json({ items: [], total: 0 });
   }
 
