@@ -1,0 +1,30 @@
+services:
+  backend:
+    image: ghcr.io/hypotyposis/team-memory:latest
+    container_name: team-memory
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3456}:3456"
+    environment:
+      PORT: 3456
+      TEAM_MEMORY_DB: /data/team-memory.db
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      TEAM_MEMORY_DUPLICATE_WARNING_THRESHOLD: ${TEAM_MEMORY_DUPLICATE_WARNING_THRESHOLD:-0.8}
+      TEAM_MEMORY_DUPLICATE_PERSIST_THRESHOLD: ${TEAM_MEMORY_DUPLICATE_PERSIST_THRESHOLD:-0.95}
+      TEAM_MEMORY_STALE_AFTER_DAYS: ${TEAM_MEMORY_STALE_AFTER_DAYS:-30}
+    volumes:
+      - team-memory-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3456/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  team-memory-data:
