@@ -266,11 +266,29 @@ async function run(): Promise<void> {
     );
 
     await req("GET", `${API}/knowledge/${itemA.id}?query_context=approval`, { apiKey });
+
+    const reportAfterView = await req<ReuseReport>("GET", `${API}/reports/reuse`, { apiKey });
+    const coverageAfterView = reportAfterView.feedback_coverage;
+    record(
+      "6a. feedback_coverage == 0 after view, before any feedback",
+      typeof coverageAfterView === "number" && coverageAfterView === 0,
+      `feedback_coverage=${coverageAfterView}`,
+    );
+
     await req("POST", `${API}/knowledge/${itemA.id}/feedback`, {
       apiKey,
       body: { verdict: "useful", comment: "reuse-loop initial feedback" },
       expect: 201,
     });
+
+    const reportAfterFirstFeedback = await req<ReuseReport>("GET", `${API}/reports/reuse`, { apiKey });
+    const coverageAfterFirst = reportAfterFirstFeedback.feedback_coverage;
+    record(
+      "6b. feedback_coverage == 1.0 after first feedback on viewed item",
+      typeof coverageAfterFirst === "number" && coverageAfterFirst === 1,
+      `feedback_coverage=${coverageAfterFirst}`,
+    );
+
     await req("POST", `${API}/knowledge/${itemA.id}/feedback`, {
       apiKey,
       body: { verdict: "useful", comment: "reuse-loop duplicate feedback" },
@@ -300,12 +318,32 @@ async function run(): Promise<void> {
       `total_queries=${reportSince7d.total_queries}`,
     );
 
-    const reportWithCoverage = await req<ReuseReport>("GET", `${API}/reports/reuse`, { apiKey });
-    const coverageDefined = typeof reportWithCoverage.feedback_coverage === "number";
+    const emptyProject = `reuse-loop-empty-${stamp}`;
+    const reportEmptySlice = await req<ReuseReport>(
+      "GET",
+      `${API}/reports/reuse?${new URLSearchParams({ project: emptyProject })}`,
+      { apiKey },
+    );
+    const emptySliceOk =
+      reportEmptySlice.total_queries === 0
+      && reportEmptySlice.total_views === 0
+      && reportEmptySlice.total_items === 0
+      && reportEmptySlice.hit_rate === 0
+      && (reportEmptySlice.feedback_coverage ?? 0) === 0
+      && reportEmptySlice.top_reused.length === 0
+      && reportEmptySlice.never_accessed.length === 0;
     record(
-      "6. feedback_coverage is pair coverage ≤ 1 (duplicate feedback does not double-count)",
-      coverageDefined && reportWithCoverage.feedback_coverage! <= 1,
-      `feedback_coverage=${reportWithCoverage.feedback_coverage}`,
+      "5a. empty slice (?project=<nonexistent>): zeroed metrics, empty arrays",
+      emptySliceOk,
+      `q=${reportEmptySlice.total_queries} v=${reportEmptySlice.total_views} items=${reportEmptySlice.total_items} cov=${reportEmptySlice.feedback_coverage}`,
+    );
+
+    const reportWithCoverage = await req<ReuseReport>("GET", `${API}/reports/reuse`, { apiKey });
+    const coverageAfterDup = reportWithCoverage.feedback_coverage;
+    record(
+      "6c. feedback_coverage stays == 1.0 after duplicate feedback (no double-count)",
+      typeof coverageAfterDup === "number" && coverageAfterDup === 1,
+      `feedback_coverage=${coverageAfterDup}`,
     );
 
     const reportAged = await req<ReuseReport>(
