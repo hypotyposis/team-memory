@@ -222,6 +222,17 @@ async function runSemanticCandidates(
     .slice(0, input.candidateLimit);
 }
 
+const FTS_RESERVED_KEYWORDS = new Set(["AND", "OR", "NOT", "NEAR"]);
+
+function buildFtsMatchQuery(rawQuery: string): string | null {
+  const tokens = rawQuery
+    .match(/[\p{L}\p{N}_]+/gu)
+    ?.filter((token) => !FTS_RESERVED_KEYWORDS.has(token.toUpperCase()));
+
+  if (!tokens || tokens.length === 0) return null;
+  return tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" ");
+}
+
 async function runHybridSearch(
   db: ReturnType<typeof getDb>,
   input: {
@@ -251,7 +262,16 @@ async function runHybridSearch(
   }
   const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
   const sql = `SELECT k.*, rank FROM knowledge_fts fts JOIN knowledge k ON k.rowid = fts.rowid WHERE knowledge_fts MATCH ? ${whereClause} ORDER BY rank LIMIT ?`;
-  const ftsRows = db.prepare(sql).all(input.query, ...params, candidateLimit) as FtsSearchRow[];
+  const ftsMatchQuery = buildFtsMatchQuery(input.query);
+  let ftsRows: FtsSearchRow[] = [];
+  if (ftsMatchQuery) {
+    try {
+      ftsRows = db.prepare(sql).all(ftsMatchQuery, ...params, candidateLimit) as FtsSearchRow[];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[runHybridSearch] FTS MATCH failed for ${JSON.stringify(input.query)}: ${message}`);
+    }
+  }
   const filteredFtsRows = ftsRows.filter((row) => matchesRequestedTags(row, input.tags));
   const ftsScores = normalizedFtsScores(filteredFtsRows);
 
@@ -589,7 +609,11 @@ api.post("/tasks/start", async (c) => {
     max_matches?: unknown;
   };
 
-  if (body.description === undefined || body.description === null || body.description === "") {
+  if (
+    body.description === undefined
+    || body.description === null
+    || (typeof body.description === "string" && body.description.trim() === "")
+  ) {
     return jsonTaskError(c, 400, "description is required", "task_description_required");
   }
   if (typeof body.description !== "string") {
