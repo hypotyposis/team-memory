@@ -39,3 +39,28 @@ export interface KnowledgeListItem {
   search_mode?: "fts" | "semantic" | "hybrid";
   created_at: string;
 }
+
+export interface TopReusedItem {
+  knowledge_id: string;
+  claim: string;
+  view_count: number;
+  unique_owners: number;
+  useful_feedback_count: number;
+  not_useful_feedback_count: number;
+  outdated_feedback_count: number;
+}
+
+export interface NeverAccessedItem {
+  id: string;
+  claim: string;
+}
+
+export interface ReuseReport {
+  total_queries: number;
+  total_views: number;
+  total_items: number;
+  never_accessed_pct: number;
+  north_star: number;
+  top_reused: TopReusedItem[];
+  never_accessed: NeverAccessedItem[];
+}
