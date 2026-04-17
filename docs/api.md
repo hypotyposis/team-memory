@@ -107,11 +107,12 @@ The response body includes a `warnings[]` array when the publish encounters a po
 | 400 | `{ "error": "tags must be a non-empty array of strings" }` | `tags` empty/invalid |
 | 400 | `{ "error": "confidence must be one of: high, medium, low" }` | Invalid confidence |
 | 400 | `{ "error": "Related item not found: …" }` | `related_to` contains unknown id |
-| 401 | — | Missing/invalid Authorization |
+| 401 | `{ "error": "…", "code": "auth_missing" }` | Authorization header omitted |
+| 401 | `{ "error": "…", "code": "auth_invalid" }` | Authorization header present but token does not match an active API key |
 
 ### `GET /api/knowledge`
 
-List knowledge items. Optional auth (read tracking).
+List knowledge items. No auth (unauthenticated listing; does not record `usage_events`).
 
 **Query parameters**
 
@@ -119,9 +120,9 @@ List knowledge items. Optional auth (read tracking).
 |---|---|
 | `project` | Filter by project |
 | `owner` | Filter by owner |
-| `tags` | Comma-separated; items must carry all listed tags |
+| `tags` | Comma-separated; items match if they carry **any** of the listed tags (OR semantics) |
 | `include_superseded` | `true` to include superseded entries (default `false`) |
-| `limit` | Integer, defaults to 50 |
+| `limit` | Integer, defaults to 50 (capped at 200) |
 | `offset` | Integer, defaults to 0 |
 
 **Response — 200**
@@ -150,7 +151,8 @@ When auth is provided, a `usage_events` row with `event_type='view'` is written.
 | Status | Code | Condition |
 |---|---|---|
 | 404 | — | Knowledge id not found |
-| 401 | `auth_missing` | `task_id` provided without Authorization |
+| 401 | `auth_missing` | `task_id` provided without Authorization header |
+| 401 | `auth_invalid` | `task_id` provided with an Authorization header whose token does not match an active API key |
 | 404 | `task_not_found` | `task_id` does not exist |
 | 403 | `task_owner_forbidden` | `task_id` owned by a different user |
 
@@ -162,7 +164,7 @@ Only the following fields are mutable: `tags`, `confidence`, `staleness_hint`, `
 
 **Response — 200** — updated knowledge row.
 
-**Errors** — `400` for invalid field values; `401` on missing auth; `404` if the id does not exist.
+**Errors** — `400` for invalid field values; `401` `auth_missing` / `auth_invalid` as described above; `404` if the id does not exist.
 
 ---
 
@@ -181,9 +183,9 @@ User text is sanitized before it reaches the FTS5 `MATCH` clause: tokens are ext
 | `q` | **Required.** Search text. |
 | `project` | Filter by project |
 | `module` | Filter by module |
-| `tags` | Comma-separated; items must carry all listed tags |
+| `tags` | Comma-separated; items match if they carry **any** of the listed tags (OR semantics) |
 | `include_superseded` | `true` to include superseded entries |
-| `limit` | Integer |
+| `limit` | Integer, defaults to 20 (capped at 100) |
 | `task_id` | Optional task session linkage |
 
 **Response — 200**
@@ -201,26 +203,27 @@ When authenticated, each returned item is recorded as an `exposure` event sharin
 
 ### `GET /api/knowledge/semantic-search`
 
-Embedding-based similarity search. Optional auth; optional `task_id` passthrough. Falls back to pure FTS if embedding generation fails.
+Embedding-based similarity search. Optional auth (read tracking); optional `task_id` passthrough. If query-embedding generation fails, the endpoint still returns `200` with an empty `items` array (observability rows still record the failure when authenticated).
 
 **Query parameters**
 
 | Param | Meaning |
 |---|---|
-| `query` | **Required.** Natural-language query. |
-| `project`, `module`, `tags`, `include_superseded`, `limit`, `task_id` | Same semantics as `/knowledge/search` |
+| `q` | **Required.** Natural-language query. |
+| `project` | Filter by project |
+| `limit` | Integer, defaults to 10 (capped at 100) |
+| `task_id` | Optional task session linkage |
 
 **Response — 200**
 
 ```json
 {
-  "items": [ { …knowledge row…, "search_mode": "semantic" \| "hybrid", "score": 0.72 } ],
-  "total": 5,
-  "retrieval_mode": "hybrid"
+  "items": [ { …knowledge row…, "similarity": 0.72 } ],
+  "total": 5
 }
 ```
 
-`retrieval_mode` is one of `"fts"`, `"semantic"`, or `"hybrid"`.
+Each item is a knowledge-row summary with a `similarity` score (cosine against the query embedding). `total` is the count of rows that had embeddings and were considered (i.e. pre-`limit` eligible pool), not the count returned.
 
 ---
 
@@ -241,10 +244,12 @@ Record a verdict on a knowledge item. **Auth required.** Optional `task_id` link
 **Response — 201**
 
 ```json
-{ "id": "…", "knowledge_id": "…", "owner": "alice", "verdict": "useful", "comment": null, "task_id": null, "created_at": "…" }
+{ "knowledge_id": "…", "owner": "alice", "verdict": "useful", "comment": null, "created_at": "…" }
 ```
 
-**Errors** — `400` on invalid verdict; `401` on missing auth; `404` if knowledge id not found; task-trace auth errors as documented.
+`task_id` is persisted to the `reuse_feedback` row when provided in the request, but the response body does not echo it.
+
+**Errors** — `400` on invalid verdict; `401` `auth_missing` / `auth_invalid`; `404` if knowledge id not found; task-trace auth errors as documented.
 
 ---
 
@@ -273,12 +278,12 @@ The session is persisted with the **raw** description (before sanitization). Hyb
   "task_id": "…",
   "description": "…",
   "project": "…" | null,
-  "retrieval_mode": "fts" | "semantic" | "hybrid",
-  "matches": [ { …knowledge row…, "search_mode": "hybrid", "score": 0.81 } ]
+  "retrieval_mode": "fts" | "hybrid",
+  "matches": [ { …knowledge row…, "search_mode": "fts" | "hybrid", "score": 0.81 } ]
 }
 ```
 
-0-hit sessions still return `201` with `task_id` and `matches: []`. Failed-embedding queries still return `201`; the query row records the failure for reuse-report observability.
+Match rows mirror the shape returned by `GET /api/knowledge/search` — each row is a knowledge-row summary plus `search_mode` and `score`. 0-hit sessions still return `201` with `task_id` and `matches: []`. Failed-embedding queries still return `201` on the FTS path; the query row records the failure for reuse-report observability.
 
 **Errors**
 
@@ -288,7 +293,8 @@ The session is persisted with the **raw** description (before sanitization). Hyb
 | 400 | `task_description_invalid` | `description` is not a string |
 | 400 | `task_project_invalid` | `project` provided but not a string |
 | 400 | `task_max_matches_invalid` | `max_matches` not an integer in `[1, 100]` |
-| 401 | — | Missing/invalid Authorization |
+| 401 | `auth_missing` | Authorization header omitted |
+| 401 | `auth_invalid` | Authorization header present but the token does not match an active API key |
 
 ### `POST /api/tasks/:task_id/end`
 
@@ -298,7 +304,7 @@ Close a task session and optionally publish findings. **Auth required.** Only th
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `status` | `"completed" \| "abandoned"` | yes | Cannot close as `open`. |
+| `status` | `"completed" \| "abandoned"` | no | Defaults to `"completed"` when omitted. Cannot be `"open"`. |
 | `findings` | array of publish bodies | no | Each entry is a `POST /api/knowledge` body (minus `owner`, which is inferred). Published atomically per finding; linked to the task via `task_publications`. |
 
 Closure happens first (status + `closed_at` written). Then findings are published sequentially; the first failure short-circuits.
@@ -332,9 +338,10 @@ The task is left in the closed state regardless of publish outcome — retrying 
 
 | Status | Code | Condition |
 |---|---|---|
-| 400 | `task_status_invalid` | `status` missing or not `completed`/`abandoned` |
+| 400 | `task_status_invalid` | `status` provided but not `"completed"` or `"abandoned"` (omitted is legal — defaults to `"completed"`) |
 | 400 | `task_findings_invalid` | `findings` provided but not an array |
-| 401 | — | Missing/invalid Authorization |
+| 401 | `auth_missing` | Authorization header omitted |
+| 401 | `auth_invalid` | Authorization header present but the token does not match an active API key |
 | 403 | `task_owner_forbidden` | Caller is not the task owner |
 | 404 | `task_not_found` | `task_id` does not exist |
 | 409 | `task_already_closed` | Session is already `completed` or `abandoned` |
@@ -381,7 +388,8 @@ Task-session and task-trace endpoints return `{ error, code }` with a stable `co
 
 | Code | Status | Surface |
 |---|---|---|
-| `auth_missing` | 401 | Any endpoint with `task_id` passthrough if the caller omits auth |
+| `auth_missing` | 401 | Any auth-required endpoint (`PATCH /knowledge/:id`, `POST /knowledge/:id/feedback`, `POST /tasks/start`, `POST /tasks/:id/end`) or any optional-auth endpoint with `task_id` passthrough when the caller omits the Authorization header |
+| `auth_invalid` | 401 | Same surfaces — Authorization header present, but the bearer token does not match an active API key |
 | `task_description_required` | 400 | `POST /tasks/start` |
 | `task_description_invalid` | 400 | `POST /tasks/start` |
 | `task_project_invalid` | 400 | `POST /tasks/start` |
