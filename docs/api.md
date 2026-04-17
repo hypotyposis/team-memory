@@ -254,6 +254,17 @@ Record a verdict on a knowledge item. **Auth required.** Optional `task_id` link
 | `comment` | string | no | Free-form note |
 | `task_id` | string | no | Task session linkage |
 
+**Minimal valid request body**
+
+```json
+{
+  "verdict": "useful",
+  "comment": "Fixed my FTS5 tokenization question on first read."
+}
+```
+
+`verdict` is the only required field — the example above includes `comment` because feedback without a one-line justification is harder to audit later.
+
 **Response — 201**
 
 ```json
@@ -283,6 +294,17 @@ Open a task session. **Auth required.**
 | `max_matches` | integer | no | Range `[1, 100]` at the REST layer, default `10`. The MCP bridge exposes a narrower `[1, 50]` cap — agents calling `start_task` via MCP will hit a client-side validation error above 50. Direct REST callers can use the full `[1, 100]` range. |
 
 The session is persisted with the **raw** description (before sanitization). Hybrid search runs with `search_mode: "hybrid"` and is recorded as a `query` event with `task_id` linked.
+
+**Minimal valid request body**
+
+```json
+{
+  "description": "Investigate why FTS5 MATCH returns 0 hits on hyphenated tokens",
+  "project": "team-memory"
+}
+```
+
+`description` is the only required field. The example pins `project` to a single namespace for clarity — see the field table above for what `project` does when omitted.
 
 **Response — 201**
 
