@@ -1,4 +1,4 @@
-import type { KnowledgeItem, KnowledgeListItem } from "./types";
+import type { KnowledgeItem, KnowledgeListItem, ReuseReport } from "./types";
 import { mockKnowledge } from "./mockData";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3456/api";
@@ -187,6 +187,12 @@ export async function searchKnowledge(params: SearchParams): Promise<PaginatedRe
 export async function getKnowledge(id: string): Promise<KnowledgeItem | null> {
   if (USE_MOCK) return mockGet(id);
   return fetchGet(id);
+}
+
+export async function getReuseReport(): Promise<ReuseReport> {
+  const res = await fetch(`${API_BASE}/reports/reuse`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
 }
 
 // --- Helpers ---
