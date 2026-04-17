@@ -23,20 +23,32 @@ Reports prioritize `view` + `feedback` over `exposure` for the real reuse metric
 
 ### What the reuse report exposes
 
-`GET /api/reports/reuse` returns the team-wide reuse snapshot. The fields you'll see today:
+`GET /api/reports/reuse` returns the team-wide reuse snapshot.
+
+**Query parameters (M1b):**
+
+| Param | Meaning |
+|-------|---------|
+| `?since=Nd` | Restrict the slice to events newer than `N` days (e.g. `7d`, `30d`). Filters `usage_events` and `reuse_feedback` rows; does NOT filter the knowledge baseline. Omit for lifetime data. Returns `400` if the format isn't `Nd` |
+| `?project=<name>` | Scope both the knowledge baseline and the event slice to a single project |
+| `?min_age_days=N` | Only filters the `never_accessed` **list** (hide items younger than `N` days). Never affects `never_accessed_pct` — the percentage always uses the unfiltered baseline. Returns `400` if not a non-negative integer |
+
+**Response fields:**
 
 | Field | Meaning |
 |-------|---------|
-| `total_queries` | Count of `query` rows. Includes 0-hit and failed-embedding queries |
+| `total_queries` | Count of `query` rows in the slice. Includes 0-hit and failed-embedding queries |
 | `hit_rate` | `queries_with_result / total_queries`. `0` when there are no queries |
-| `total_views` | Count of `view` rows |
-| `total_items` | Total knowledge rows in the table |
-| `never_accessed` | Items with **no** `exposure`, `view`, or `feedback` (P0 original semantic — kept stable on purpose, not silently redefined) |
-| `never_accessed_pct` | `never_accessed.length / total_items` |
-| `north_star_count` | Items used by ≥ 2 distinct owners via `view` or `useful` feedback |
+| `total_views` | Count of `view` rows in the slice |
+| `total_items` | Total knowledge rows (filtered by `?project=` if provided; not filtered by `?since=`) |
+| `never_accessed` | Items with **no** `exposure`, `view`, or `feedback` *within the slice* (P0 original semantic — kept stable on purpose, not silently redefined). **Slice-relative under `?since=`:** an item with all events older than the cutoff still appears here. Further filtered by `?min_age_days=` if provided |
+| `never_accessed_pct` | `baseNeverAccessed.length / total_items` — uses the **unfiltered** baseline (independent of `?min_age_days=`) so the percentage stays comparable across age thresholds |
+| `feedback_coverage` | `(viewedPairs ∩ feedbackPairs) / viewedPairs.size` where each pair is `(owner, knowledge_id)`. Slice-relative under `?since=`. `0` when no views in slice. Computed at the report layer — there is no schema unique constraint on `(owner, knowledge_id)` |
+| `top_0hit_keywords` | Top 10 0-hit search queries in the slice, each `{ normalized_key, example_text, query_count }`. Normalization: `trim + lowercase + collapse whitespace`, applied at aggregation time. Sorted by `query_count` desc, then `example_text` asc |
+| `north_star_count` | Items used by ≥ 2 distinct owners via `view` or `useful` feedback (slice-relative under `?since=`) |
 | `north_star_pct` | `north_star_count / total_items` |
 | `north_star` | **Deprecated** — back-compat alias for `north_star_pct`. New code should read `north_star_pct` (and/or `north_star_count`); this field will be removed in a future release |
-| `top_reused` | Top 10 items by `view_count + useful_feedback_count`, with per-owner uniqueness tiebreaker |
+| `top_reused` | Top 10 items by `view_count + useful_feedback_count`, with per-owner uniqueness tiebreaker (slice-relative under `?since=`) |
 
 ## Core Workflow
 
