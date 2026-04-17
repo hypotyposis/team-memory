@@ -4,6 +4,13 @@ import { getDb } from "./db.js";
 export interface ApiAuth {
   key: string;
   owner: string;
+  defaultProjects: string[] | null;
+}
+
+interface ApiKeyRow {
+  key: string;
+  owner: string;
+  default_projects: string | null;
 }
 
 function jsonError(c: Context, status: 401 | 403, error: string, code: string): Response {
@@ -16,16 +23,46 @@ function extractBearerToken(header: string | undefined): string | null {
   return match?.[1]?.trim() || null;
 }
 
+function parseDefaultProjects(raw: string | null | undefined): string[] | null {
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const projects = Array.from(new Set(
+      parsed
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ));
+    return projects.length > 0 ? projects : null;
+  } catch {
+    return null;
+  }
+}
+
+function lookupApiAuth(token: string): ApiAuth | undefined {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT key, owner, default_projects FROM api_keys WHERE key = ? AND revoked_at IS NULL")
+    .get(token) as ApiKeyRow | undefined;
+
+  if (!row) return undefined;
+
+  return {
+    key: row.key,
+    owner: row.owner,
+    defaultProjects: parseDefaultProjects(row.default_projects),
+  };
+}
+
 export function requireApiAuth(c: Context): ApiAuth | Response {
   const token = extractBearerToken(c.req.header("authorization"));
   if (!token) {
     return jsonError(c, 401, "Missing Authorization: Bearer <api_key> header", "auth_missing");
   }
 
-  const db = getDb();
-  const row = db
-    .prepare("SELECT key, owner FROM api_keys WHERE key = ? AND revoked_at IS NULL")
-    .get(token) as ApiAuth | undefined;
+  const row = lookupApiAuth(token);
 
   if (!row) {
     return jsonError(c, 401, "Invalid API key", "auth_invalid");
@@ -43,10 +80,7 @@ export function getOptionalApiAuth(c: Context): ApiAuth | Response | null {
     return jsonError(c, 401, "Missing Authorization: Bearer <api_key> header", "auth_missing");
   }
 
-  const db = getDb();
-  const row = db
-    .prepare("SELECT key, owner FROM api_keys WHERE key = ? AND revoked_at IS NULL")
-    .get(token) as ApiAuth | undefined;
+  const row = lookupApiAuth(token);
 
   if (!row) {
     return jsonError(c, 401, "Invalid API key", "auth_invalid");

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { v4 as uuidv4 } from "uuid";
 import { getOptionalApiAuth, requireApiAuth, requireOwnerAccess } from "./auth.js";
+import type { ApiAuth } from "./auth.js";
 import { getDb } from "./db.js";
 import { findPersistedDuplicateOf } from "./duplicates.js";
 import { embedKnowledgeItem, embedTexts } from "./embedding.js";
@@ -173,7 +174,7 @@ async function runSemanticCandidates(
   db: ReturnType<typeof getDb>,
   input: {
     query: string;
-    project?: string;
+    projects?: string[];
     module?: string;
     includeSuperseded: boolean;
     tags?: string[];
@@ -190,9 +191,9 @@ async function runSemanticCandidates(
   if (!input.includeSuperseded) {
     conditions.push("superseded_by IS NULL");
   }
-  if (input.project) {
-    conditions.push("project = ?");
-    params.push(input.project);
+  if (input.projects?.length) {
+    conditions.push(`project IN (${input.projects.map(() => "?").join(", ")})`);
+    params.push(...input.projects);
   }
   if (input.module) {
     conditions.push("module = ?");
@@ -237,7 +238,7 @@ async function runHybridSearch(
   db: ReturnType<typeof getDb>,
   input: {
     query: string;
-    project?: string;
+    projects?: string[];
     module?: string;
     includeSuperseded: boolean;
     tags?: string[];
@@ -252,9 +253,9 @@ async function runHybridSearch(
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   if (!input.includeSuperseded) conditions.push("k.superseded_by IS NULL");
-  if (input.project) {
-    conditions.push("k.project = ?");
-    params.push(input.project);
+  if (input.projects?.length) {
+    conditions.push(`k.project IN (${input.projects.map(() => "?").join(", ")})`);
+    params.push(...input.projects);
   }
   if (input.module) {
     conditions.push("k.module = ?");
@@ -277,7 +278,7 @@ async function runHybridSearch(
 
   const semanticRows = await runSemanticCandidates(db, {
     query: input.query,
-    project: input.project,
+    projects: input.projects,
     module: input.module,
     includeSuperseded: input.includeSuperseded,
     tags: input.tags,
@@ -347,6 +348,18 @@ function jsonTaskError(
   code: string,
 ): Response {
   return c.json({ error, code }, status);
+}
+
+function resolveScopedProjects(explicitProject: string | undefined, auth: ApiAuth | null): string[] | null {
+  if (explicitProject === "*") return null;
+  if (explicitProject !== undefined) return [explicitProject];
+  return auth?.defaultProjects ?? null;
+}
+
+function projectLabelForUsage(explicitProject: string | undefined, scopedProjects: string[] | null): string | null {
+  if (explicitProject && explicitProject !== "*") return explicitProject;
+  if (scopedProjects?.length === 1) return scopedProjects[0]!;
+  return null;
 }
 
 function resolveTaskTrace(
@@ -638,7 +651,7 @@ api.post("/tasks/start", async (c) => {
 
   const results = await runHybridSearch(db, {
     query: description,
-    project: project ?? undefined,
+    projects: project ? [project] : undefined,
     includeSuperseded: false,
     limit: maxMatches,
   });
@@ -738,6 +751,7 @@ api.get("/knowledge/search", async (c) => {
   const taskTrace = resolveTaskTrace(c, c.req.query("task_id"), maybeAuth);
   if (taskTrace instanceof Response) return taskTrace;
   const project = c.req.query("project");
+  const scopedProjects = resolveScopedProjects(project, maybeAuth);
   const tags = c.req.query("tags");
   const module_ = c.req.query("module");
   const includeSuperseded = c.req.query("include_superseded") === "true";
@@ -746,7 +760,7 @@ api.get("/knowledge/search", async (c) => {
   const requestedTags = parseTagList(tags);
   const results = await runHybridSearch(db, {
     query: q,
-    project: project ?? undefined,
+    projects: scopedProjects ?? undefined,
     module: module_ ?? undefined,
     includeSuperseded,
     tags: requestedTags,
@@ -756,7 +770,7 @@ api.get("/knowledge/search", async (c) => {
   if (maybeAuth) {
     recordSearchEvents(db, maybeAuth.owner, {
       items: results.items.map((item) => ({ id: item.id, project: item.project })),
-      project: project ?? null,
+      project: projectLabelForUsage(project, scopedProjects),
       taskId: taskTrace?.task_id ?? null,
       queryText: q,
       searchMode: "hybrid",
@@ -776,6 +790,7 @@ api.get("/knowledge/semantic-search", async (c) => {
   if (taskTrace instanceof Response) return taskTrace;
 
   const project = c.req.query("project");
+  const scopedProjects = resolveScopedProjects(project, maybeAuth);
   const limit = Math.min(parseInt(c.req.query("limit") ?? "10", 10) || 10, 100);
   const db = getDb();
 
@@ -784,7 +799,7 @@ api.get("/knowledge/semantic-search", async (c) => {
     if (maybeAuth) {
       recordSearchEvents(db, maybeAuth.owner, {
         items: [],
-        project: project ?? null,
+        project: projectLabelForUsage(project, scopedProjects),
         taskId: taskTrace?.task_id ?? null,
         queryText: q,
         searchMode: "semantic",
@@ -795,9 +810,9 @@ api.get("/knowledge/semantic-search", async (c) => {
 
   const params: (string | number)[] = [];
   const conditions = ["embedding IS NOT NULL", "superseded_by IS NULL"];
-  if (project) {
-    conditions.push("project = ?");
-    params.push(project);
+  if (scopedProjects?.length) {
+    conditions.push(`project IN (${scopedProjects.map(() => "?").join(", ")})`);
+    params.push(...scopedProjects);
   }
 
   const rows = db.prepare(
@@ -821,7 +836,7 @@ api.get("/knowledge/semantic-search", async (c) => {
   if (maybeAuth) {
     recordSearchEvents(db, maybeAuth.owner, {
       items: items.map((item) => ({ id: item.id, project: item.project })),
-      project: project ?? null,
+      project: projectLabelForUsage(project, scopedProjects),
       taskId: taskTrace?.task_id ?? null,
       queryText: q,
       searchMode: "semantic",
@@ -833,7 +848,10 @@ api.get("/knowledge/semantic-search", async (c) => {
 
 // 4. GET /api/knowledge
 api.get("/knowledge", (c) => {
+  const maybeAuth = getOptionalApiAuth(c);
+  if (maybeAuth instanceof Response) return maybeAuth;
   const project = c.req.query("project");
+  const scopedProjects = resolveScopedProjects(project, maybeAuth);
   const tags = c.req.query("tags");
   const module_ = c.req.query("module");
   const owner = c.req.query("owner");
@@ -844,7 +862,10 @@ api.get("/knowledge", (c) => {
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   if (!includeSuperseded) conditions.push("superseded_by IS NULL");
-  if (project) { conditions.push("project = ?"); params.push(project); }
+  if (scopedProjects?.length) {
+    conditions.push(`project IN (${scopedProjects.map(() => "?").join(", ")})`);
+    params.push(...scopedProjects);
+  }
   if (module_) { conditions.push("module = ?"); params.push(module_); }
   if (owner) { conditions.push("owner = ?"); params.push(owner); }
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
