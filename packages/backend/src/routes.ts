@@ -75,6 +75,17 @@ function parseTagList(tags: string | null | undefined): string[] | undefined {
   return list.length > 0 ? list : undefined;
 }
 
+function timestampFromDb(value: string): number {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  return Date.parse(normalized);
+}
+
+function normalizeQueryText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 function matchesRequestedTags(row: KnowledgeRow, tags: string[] | undefined): boolean {
   if (!tags || tags.length === 0) return true;
   const rowTags: string[] = JSON.parse(row.tags).map((tag: string) => tag.toLowerCase());
@@ -485,27 +496,86 @@ api.get("/knowledge/:id", (c) => {
 
 // 6. GET /api/reports/reuse
 api.get("/reports/reuse", (c) => {
+  const since = c.req.query("since");
+  const project = c.req.query("project");
+  const minAgeDaysParam = c.req.query("min_age_days");
+  let cutoffTimestamp: number | null = null;
+  if (since) {
+    const match = /^(\d+)d$/.exec(since.trim());
+    if (!match) {
+      return c.json({ error: "since must be in Nd format, for example 7d or 30d" }, 400);
+    }
+    cutoffTimestamp = Date.now() - Number.parseInt(match[1]!, 10) * 24 * 60 * 60 * 1000;
+  }
+
+  let minAgeDays: number | null = null;
+  if (minAgeDaysParam) {
+    const parsed = Number.parseInt(minAgeDaysParam, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return c.json({ error: "min_age_days must be a non-negative integer" }, 400);
+    }
+    minAgeDays = parsed;
+  }
+
   const db = getDb();
+  const knowledgeParams: string[] = [];
+  const knowledgeWhere: string[] = [];
+  if (project) {
+    knowledgeWhere.push("project = ?");
+    knowledgeParams.push(project);
+  }
   const knowledgeRows = db.prepare(
-    "SELECT id, claim, created_at FROM knowledge ORDER BY created_at ASC",
-  ).all() as Array<{ id: string; claim: string; created_at: string }>;
+    `SELECT id, claim, project, created_at
+     FROM knowledge
+     ${knowledgeWhere.length > 0 ? `WHERE ${knowledgeWhere.join(" AND ")}` : ""}
+     ORDER BY created_at ASC`,
+  ).all(...knowledgeParams) as Array<{ id: string; claim: string; project: string; created_at: string }>;
+
+  const usageParams: string[] = [];
+  const usageWhere: string[] = [];
+  if (project) {
+    usageWhere.push("project = ?");
+    usageParams.push(project);
+  }
   const usageRows = db.prepare(
-    `SELECT knowledge_id, owner, event_type, request_id, result_count
-     FROM usage_events`,
-  ).all() as Array<{
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count, project, created_at
+     FROM usage_events
+     ${usageWhere.length > 0 ? `WHERE ${usageWhere.join(" AND ")}` : ""}`,
+  ).all(...usageParams) as Array<{
     knowledge_id: string | null;
     owner: string;
     event_type: "query" | "exposure" | "view";
     request_id: string | null;
+    query_text: string | null;
     result_count: number | null;
+    project: string;
+    created_at: string;
   }>;
+
+  const feedbackParams: string[] = [];
+  const feedbackWhere: string[] = [];
+  if (project) {
+    feedbackWhere.push("knowledge.project = ?");
+    feedbackParams.push(project);
+  }
   const feedbackRows = db.prepare(
-    "SELECT knowledge_id, owner, verdict FROM reuse_feedback",
-  ).all() as Array<{
+    `SELECT reuse_feedback.knowledge_id, reuse_feedback.owner, reuse_feedback.verdict, reuse_feedback.created_at
+     FROM reuse_feedback
+     JOIN knowledge ON knowledge.id = reuse_feedback.knowledge_id
+     ${feedbackWhere.length > 0 ? `WHERE ${feedbackWhere.join(" AND ")}` : ""}`,
+  ).all(...feedbackParams) as Array<{
     knowledge_id: string;
     owner: string;
     verdict: ReuseVerdict;
+    created_at: string;
   }>;
+
+  const filteredUsageRows = usageRows.filter((row) => (
+    cutoffTimestamp === null || timestampFromDb(row.created_at) >= cutoffTimestamp
+  ));
+  const filteredFeedbackRows = feedbackRows.filter((row) => (
+    cutoffTimestamp === null || timestampFromDb(row.created_at) >= cutoffTimestamp
+  ));
 
   const stats = new Map<string, {
     claim: string;
@@ -533,7 +603,8 @@ api.get("/reports/reuse", (c) => {
 
   let totalQueries = 0;
   let queriesWithResult = 0;
-  for (const row of usageRows) {
+  const viewedPairs = new Set<string>();
+  for (const row of filteredUsageRows) {
     if (row.event_type === "query") {
       totalQueries += 1;
       if ((row.result_count ?? 0) > 0) {
@@ -553,11 +624,14 @@ api.get("/reports/reuse", (c) => {
 
     item.view_count += 1;
     item.view_owners.add(row.owner);
+    viewedPairs.add(`${row.owner}\u0000${row.knowledge_id}`);
   }
 
-  for (const row of feedbackRows) {
+  const feedbackPairs = new Set<string>();
+  for (const row of filteredFeedbackRows) {
     const item = stats.get(row.knowledge_id);
     if (!item) continue;
+    feedbackPairs.add(`${row.owner}\u0000${row.knowledge_id}`);
 
     if (row.verdict === "useful") {
       item.useful_feedback_count += 1;
@@ -570,19 +644,62 @@ api.get("/reports/reuse", (c) => {
   }
 
   const totalItems = knowledgeRows.length;
-  const neverAccessed = knowledgeRows
+  const baseNeverAccessed = knowledgeRows.filter((row) => {
+    const item = stats.get(row.id);
+    if (!item) return false;
+    return (
+      item.exposure_count === 0
+      && item.view_count === 0
+      && item.useful_feedback_count === 0
+      && item.not_useful_feedback_count === 0
+      && item.outdated_feedback_count === 0
+    );
+  });
+
+  const minCreatedAtTimestamp = minAgeDays === null
+    ? null
+    : Date.now() - minAgeDays * 24 * 60 * 60 * 1000;
+  const neverAccessed = baseNeverAccessed
     .filter((row) => {
+      if (minCreatedAtTimestamp !== null && timestampFromDb(row.created_at) > minCreatedAtTimestamp) {
+        return false;
+      }
       const item = stats.get(row.id);
       if (!item) return false;
-      return (
-        item.exposure_count === 0
-        && item.view_count === 0
-        && item.useful_feedback_count === 0
-        && item.not_useful_feedback_count === 0
-        && item.outdated_feedback_count === 0
-      );
+      return true;
     })
     .map((row) => ({ id: row.id, claim: row.claim }));
+
+  const top0HitKeywords = Array.from(
+    filteredUsageRows
+      .filter((row) => row.event_type === "query" && (row.result_count ?? 0) === 0 && row.query_text)
+      .reduce((acc, row) => {
+        const rawQuery = row.query_text!.trim();
+        const normalizedKey = normalizeQueryText(row.query_text!);
+        if (!normalizedKey) return acc;
+
+        const existing = acc.get(normalizedKey);
+        if (existing) {
+          existing.query_count += 1;
+          return acc;
+        }
+
+        acc.set(normalizedKey, {
+          normalized_key: normalizedKey,
+          example_text: rawQuery,
+          query_count: 1,
+        });
+        return acc;
+      }, new Map<string, { normalized_key: string; example_text: string; query_count: number }>())
+      .values(),
+  )
+    .sort((left, right) => {
+      if (right.query_count !== left.query_count) {
+        return right.query_count - left.query_count;
+      }
+      return left.example_text.localeCompare(right.example_text);
+    })
+    .slice(0, 10);
 
   const northStarCount = knowledgeRows.filter((row) => {
     const item = stats.get(row.id);
@@ -626,20 +743,24 @@ api.get("/reports/reuse", (c) => {
     .slice(0, 10)
     .map(({ reuse_score: _reuseScore, ...item }) => item);
 
-  const neverAccessedPct = totalItems === 0 ? 0 : neverAccessed.length / totalItems;
+  const neverAccessedPct = totalItems === 0 ? 0 : baseNeverAccessed.length / totalItems;
   const northStarPct = totalItems === 0 ? 0 : northStarCount / totalItems;
   const hitRate = totalQueries === 0 ? 0 : queriesWithResult / totalQueries;
+  const coveredPairs = Array.from(viewedPairs).filter((pairKey) => feedbackPairs.has(pairKey)).length;
+  const feedbackCoverage = viewedPairs.size === 0 ? 0 : coveredPairs / viewedPairs.size;
 
   return c.json({
     total_queries: totalQueries,
     hit_rate: hitRate,
-    total_views: usageRows.filter((row) => row.event_type === "view").length,
+    total_views: filteredUsageRows.filter((row) => row.event_type === "view").length,
     total_items: totalItems,
     never_accessed_pct: neverAccessedPct,
+    feedback_coverage: feedbackCoverage,
     north_star: northStarPct,
     north_star_count: northStarCount,
     north_star_pct: northStarPct,
     top_reused: topReused,
+    top_0hit_keywords: top0HitKeywords,
     never_accessed: neverAccessed,
   });
 });
