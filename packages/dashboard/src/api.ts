@@ -8,7 +8,7 @@ import { mockKnowledge, mockReuseReport } from "./mockData";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3456/api";
 const USE_MOCK = false;
-const USE_REUSE_MOCK = true;
+const USE_REUSE_MOCK = false;
 
 let _apiKey: string | null = localStorage.getItem("tm_api_key");
 

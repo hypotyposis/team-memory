@@ -590,7 +590,7 @@ function ReuseView({
             <MetricCard
               label="Never accessed"
               value={formatPct(report.never_accessed_pct)}
-              hint={`${report.never_accessed.length} of ${report.total_items} items — no exposure, view, or feedback`}
+              hint={`${Math.round(report.never_accessed_pct * report.total_items)} of ${report.total_items} items have no exposure, view, or feedback (baseline, ignores min age filter)`}
             />
           </section>
 
