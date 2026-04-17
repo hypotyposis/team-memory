@@ -248,6 +248,81 @@ test("start_task returns task_id for 0-hit sessions and still records a query ro
   assert.equal(events[0]!.project, "ghost-project");
 });
 
+test("start_task treats FTS-sensitive description text as plain user input instead of crashing", async () => {
+  const db = getDb();
+  const apiKey = createApiKey("Alice");
+  const descriptions = [
+    "unrelated-gibberish",
+    "fix #42: tokenize",
+    "user-input AND dangerous",
+    "refactor auth-middleware OR login",
+    "NEAR edge case",
+    "quote \"me\" please",
+    "测试中文描述",
+  ];
+
+  for (const description of descriptions) {
+    const response = await app.request("http://localhost/api/tasks/start", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        description,
+        project: "ghost-project",
+      }),
+    });
+
+    assert.equal(response.status, 201, `expected 201 for ${description}`);
+    const body = await response.json() as {
+      task_id: string;
+      description: string;
+      matches: unknown[];
+    };
+
+    assert.equal(body.description, description);
+    assert.ok(body.task_id);
+    assert.deepEqual(body.matches, []);
+  }
+
+  const queryRows = db.prepare(
+    `SELECT event_type, query_text, result_count
+     FROM usage_events
+     WHERE event_type = 'query'
+     ORDER BY id ASC`,
+  ).all() as Array<{
+    event_type: string;
+    query_text: string | null;
+    result_count: number | null;
+  }>;
+
+  assert.equal(queryRows.length, descriptions.length);
+  assert.deepEqual(queryRows.map((row) => row.query_text), descriptions);
+  assert.ok(queryRows.every((row) => row.result_count === 0));
+});
+
+test("start_task rejects blank-or-whitespace-only descriptions as required-field violations", async () => {
+  const apiKey = createApiKey("Alice");
+
+  for (const description of ["", "   ", "\t\n"]) {
+    const response = await app.request("http://localhost/api/tasks/start", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ description }),
+    });
+
+    assert.equal(response.status, 400, `expected 400 for ${JSON.stringify(description)}`);
+    assert.deepEqual(await response.json(), {
+      error: "description is required",
+      code: "task_description_required",
+    });
+  }
+});
+
 test("existing endpoints hard-reject unknown or foreign task_id but accept closed tasks for follow-up linkage", async () => {
   const db = getDb();
   insertKnowledgeRow(db, { id: "item-a", claim: "Control-plane billing note." });

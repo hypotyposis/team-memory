@@ -181,3 +181,25 @@ test("hybrid search falls back to pure FTS when query embeddings are unavailable
 
   process.env.EMBEDDING_API_KEY = "test-hybrid-key";
 });
+
+test("hybrid search treats FTS-sensitive user text as plain terms instead of MATCH syntax", async () => {
+  const db = getDb();
+  insertKnowledgeRow(db, {
+    id: "auth-refactor-row",
+    claim: "Refactor auth middleware login flow",
+    embedding: null,
+  });
+
+  delete process.env.EMBEDDING_API_KEY;
+
+  const response = await app.request("http://localhost/api/knowledge/search?q=refactor%20auth-middleware%20OR%20login");
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { items: HybridSummary[]; total: number };
+
+  assert.equal(body.total, 1);
+  assert.deepEqual(body.items.map((item) => item.id), ["auth-refactor-row"]);
+  assert.equal(body.items[0]?.search_mode, "fts");
+
+  process.env.EMBEDDING_API_KEY = "test-hybrid-key";
+});
