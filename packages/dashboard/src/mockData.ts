@@ -1,4 +1,4 @@
-import type { KnowledgeItem } from "./types";
+import type { KnowledgeItem, ReuseReport } from "./types";
 
 export const mockKnowledge: KnowledgeItem[] = [
   {
@@ -119,3 +119,56 @@ Agent 工作目录在 ~/.slock/agents/{agentId}/。`,
     created_at: "2026-04-14T00:10:00Z",
   },
 ];
+
+export const mockReuseReport: ReuseReport = {
+  total_queries: 12,
+  hit_rate: 0.75,
+  total_views: 9,
+  total_items: 42,
+  never_accessed_pct: 0.31,
+  feedback_coverage: 0.67,
+  north_star_count: 6,
+  north_star_pct: 0.14,
+  top_reused: [
+    {
+      knowledge_id: "6579131c-17c0-47fa-8b2e-a29380d0b5de",
+      claim: "Shared Team Memory deployments should set TEAM_MEMORY_DB to an absolute path",
+      view_count: 3,
+      unique_owners: 2,
+      useful_feedback_count: 2,
+      not_useful_feedback_count: 0,
+      outdated_feedback_count: 0,
+    },
+    {
+      knowledge_id: "k-001",
+      claim: "infer-monorepo 的主架构轴是 DEPLOY_MODE，不是目录结构",
+      view_count: 2,
+      unique_owners: 2,
+      useful_feedback_count: 1,
+      not_useful_feedback_count: 0,
+      outdated_feedback_count: 0,
+    },
+  ],
+  top_0hit_keywords: [
+    {
+      normalized_key: "billing refund",
+      example_text: "Billing refund",
+      query_count: 5,
+    },
+    {
+      normalized_key: "stripe webhook retry",
+      example_text: "stripe webhook retry",
+      query_count: 3,
+    },
+  ],
+  never_accessed: [
+    {
+      id: "60ad7408-ee84-4eb0-98f3-1dc1e5290546",
+      claim: "In multi-Node environments, Team Memory backend and MCP should pin the same Node major version",
+    },
+    {
+      id: "k-007",
+      claim: "@slock-ai/daemon 没有做混淆，代码完全可读",
+    },
+  ],
+};

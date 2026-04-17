@@ -1,8 +1,14 @@
-import type { KnowledgeItem, KnowledgeListItem, ReuseReport } from "./types";
-import { mockKnowledge } from "./mockData";
+import type {
+  KnowledgeItem,
+  KnowledgeListItem,
+  ReuseReport,
+  ReuseReportParams,
+} from "./types";
+import { mockKnowledge, mockReuseReport } from "./mockData";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3456/api";
 const USE_MOCK = false;
+const USE_REUSE_MOCK = true;
 
 let _apiKey: string | null = localStorage.getItem("tm_api_key");
 
@@ -189,8 +195,15 @@ export async function getKnowledge(id: string): Promise<KnowledgeItem | null> {
   return fetchGet(id);
 }
 
-export async function getReuseReport(): Promise<ReuseReport> {
-  const res = await fetch(`${API_BASE}/reports/reuse`, { headers: authHeaders() });
+export async function getReuseReport(params: ReuseReportParams = {}): Promise<ReuseReport> {
+  if (USE_REUSE_MOCK) return mockReuseReport;
+  const url = new URL(`${API_BASE}/reports/reuse`);
+  if (params.since && params.since !== "all") url.searchParams.set("since", params.since);
+  if (params.project) url.searchParams.set("project", params.project);
+  if (params.min_age_days !== undefined) {
+    url.searchParams.set("min_age_days", String(params.min_age_days));
+  }
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }

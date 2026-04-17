@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { KnowledgeItem, KnowledgeListItem, ReuseReport } from "./types";
+import type { KnowledgeItem, KnowledgeListItem, ReuseReport, ReuseSince } from "./types";
 import {
   listKnowledge,
   searchKnowledge,
@@ -148,7 +148,10 @@ function App() {
       )}
 
       {view === "reuse" ? (
-        <ReuseView onNavigate={(id) => { setView("knowledge"); selectItem(id); }} />
+        <ReuseView
+          projects={projects}
+          onNavigate={(id) => { setView("knowledge"); selectItem(id); }}
+        />
       ) : (
       <div className="app-body">
         <aside className="sidebar">
@@ -456,133 +459,243 @@ function DetailView({
   );
 }
 
-function ReuseView({ onNavigate }: { onNavigate: (id: string) => void }) {
+function ReuseView({
+  projects,
+  onNavigate,
+}: {
+  projects: string[];
+  onNavigate: (id: string) => void;
+}) {
   const [report, setReport] = useState<ReuseReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [since, setSince] = useState<ReuseSince>("7d");
+  const [projectFilter, setProjectFilter] = useState<string>("");
+  const [minAgeInput, setMinAgeInput] = useState<string>("");
 
   useEffect(() => {
-    getReuseReport()
-      .then(setReport)
-      .catch((e) => setError(String(e)));
-  }, []);
+    setLoading(true);
+    setError(null);
+    const minAge = minAgeInput.trim() === "" ? undefined : Number(minAgeInput);
+    const params = {
+      since,
+      project: projectFilter || undefined,
+      min_age_days: minAge !== undefined && !Number.isNaN(minAge) ? minAge : undefined,
+    };
+    getReuseReport(params)
+      .then((r) => {
+        setReport(r);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setLoading(false);
+      });
+  }, [since, projectFilter, minAgeInput]);
 
-  if (error) {
-    return (
-      <div className="reuse-view">
+  const sinceLabel =
+    since === "7d" ? "最近 7 天" : since === "30d" ? "最近 30 天" : "全量";
+
+  return (
+    <div className="reuse-view">
+      <section className="reuse-toolbar">
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">时间窗</span>
+          <div className="reuse-toggle">
+            {(["7d", "30d", "all"] as ReuseSince[]).map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                className={`reuse-toggle-btn ${since === opt ? "active" : ""}`}
+                onClick={() => setSince(opt)}
+              >
+                {opt === "7d" ? "最近 7 天" : opt === "30d" ? "最近 30 天" : "全量"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">项目</span>
+          <select
+            className="reuse-select"
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+          >
+            <option value="">全部项目</option>
+            {projects.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="reuse-toolbar-group">
+          <span
+            className="reuse-toolbar-label"
+            title="Only filters the 'Never accessed' list — items younger than N days are excluded"
+          >
+            min age (days)
+          </span>
+          <input
+            type="number"
+            min={0}
+            className="reuse-input"
+            placeholder="0"
+            value={minAgeInput}
+            onChange={(e) => setMinAgeInput(e.target.value)}
+          />
+        </div>
+        <div className="reuse-toolbar-spacer" />
+        <span className="reuse-toolbar-status">
+          {loading ? "Loading…" : `Window: ${sinceLabel}`}
+        </span>
+      </section>
+
+      {error ? (
         <div className="reuse-error">
           <div className="title">Failed to load reuse report</div>
           <div>{error}</div>
         </div>
-      </div>
-    );
-  }
-
-  if (!report) {
-    return (
-      <div className="reuse-view">
+      ) : !report ? (
         <div className="reuse-loading">Loading reuse report…</div>
-      </div>
-    );
-  }
+      ) : (
+        <>
+          <section className="reuse-cards">
+            <MetricCard
+              label="Total queries"
+              value={report.total_queries.toString()}
+              hint="raw query events in window"
+            />
+            <MetricCard
+              label="Hit rate"
+              value={formatPct(report.hit_rate)}
+              hint="queries with ≥1 result / total queries"
+            />
+            <MetricCard
+              label="Total views"
+              value={report.total_views.toString()}
+              hint="raw view events (get_knowledge opens)"
+            />
+            <MetricCard
+              label="Feedback coverage"
+              value={formatPct(report.feedback_coverage)}
+              hint="per (owner, item) pair — of viewed pairs, how many have feedback"
+            />
+            <MetricCard
+              label="North star"
+              value={formatPct(report.north_star_pct)}
+              hint={`${report.north_star_count} items viewed or marked useful by 2+ distinct owners`}
+              highlight
+            />
+            <MetricCard
+              label="Never accessed"
+              value={formatPct(report.never_accessed_pct)}
+              hint={`${report.never_accessed.length} of ${report.total_items} items — no exposure, view, or feedback`}
+            />
+          </section>
 
-  return (
-    <div className="reuse-view">
-      <section className="reuse-cards">
-        <MetricCard
-          label="Total queries"
-          value={report.total_queries.toString()}
-          hint="distinct searches that returned at least one result"
-        />
-        <MetricCard
-          label="Total views"
-          value={report.total_views.toString()}
-          hint="get_knowledge opens that record a view event"
-        />
-        <MetricCard
-          label="North star"
-          value={formatPct(report.north_star)}
-          hint="items viewed or marked useful by 2+ distinct owners"
-          highlight
-        />
-        <MetricCard
-          label="Never accessed"
-          value={formatPct(report.never_accessed_pct)}
-          hint={`${report.never_accessed.length} of ${report.total_items} items`}
-        />
-      </section>
-
-      <section className="reuse-section">
-        <h2>Top reused items</h2>
-        {report.top_reused.length === 0 ? (
-          <div className="reuse-empty">
-            No items have been viewed or received feedback yet.
-          </div>
-        ) : (
-          <div className="reuse-table">
-            <div className="reuse-table-head">
-              <span className="reuse-col-rank">#</span>
-              <span className="reuse-col-claim">Claim</span>
-              <span className="reuse-col-num">Views</span>
-              <span className="reuse-col-num">Owners</span>
-              <span className="reuse-col-feedback">Feedback</span>
-            </div>
-            {report.top_reused.map((item, idx) => (
-              <div
-                key={item.knowledge_id}
-                className="reuse-row"
-                onClick={() => onNavigate(item.knowledge_id)}
-              >
-                <span className="reuse-col-rank">{idx + 1}</span>
-                <span className="reuse-col-claim">{item.claim}</span>
-                <span className="reuse-col-num">{item.view_count}</span>
-                <span className="reuse-col-num">{item.unique_owners}</span>
-                <span className="reuse-col-feedback">
-                  {item.useful_feedback_count > 0 && (
-                    <span className="feedback-pill useful">
-                      {item.useful_feedback_count} useful
-                    </span>
-                  )}
-                  {item.not_useful_feedback_count > 0 && (
-                    <span className="feedback-pill not-useful">
-                      {item.not_useful_feedback_count} not useful
-                    </span>
-                  )}
-                  {item.outdated_feedback_count > 0 && (
-                    <span className="feedback-pill outdated">
-                      {item.outdated_feedback_count} outdated
-                    </span>
-                  )}
-                </span>
+          <section className="reuse-section">
+            <h2>Top reused items</h2>
+            {report.top_reused.length === 0 ? (
+              <div className="reuse-empty">
+                No items have been viewed or received feedback yet.
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+            ) : (
+              <div className="reuse-table">
+                <div className="reuse-table-head">
+                  <span className="reuse-col-rank">#</span>
+                  <span className="reuse-col-claim">Claim</span>
+                  <span className="reuse-col-num">Views</span>
+                  <span className="reuse-col-num">Owners</span>
+                  <span className="reuse-col-feedback">Feedback</span>
+                </div>
+                {report.top_reused.map((item, idx) => (
+                  <div
+                    key={item.knowledge_id}
+                    className="reuse-row"
+                    onClick={() => onNavigate(item.knowledge_id)}
+                  >
+                    <span className="reuse-col-rank">{idx + 1}</span>
+                    <span className="reuse-col-claim">{item.claim}</span>
+                    <span className="reuse-col-num">{item.view_count}</span>
+                    <span className="reuse-col-num">{item.unique_owners}</span>
+                    <span className="reuse-col-feedback">
+                      {item.useful_feedback_count > 0 && (
+                        <span className="feedback-pill useful">
+                          {item.useful_feedback_count} useful
+                        </span>
+                      )}
+                      {item.not_useful_feedback_count > 0 && (
+                        <span className="feedback-pill not-useful">
+                          {item.not_useful_feedback_count} not useful
+                        </span>
+                      )}
+                      {item.outdated_feedback_count > 0 && (
+                        <span className="feedback-pill outdated">
+                          {item.outdated_feedback_count} outdated
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
 
-      <section className="reuse-section">
-        <h2>Never accessed</h2>
-        <p className="reuse-section-hint">
-          Items with no exposure, view, or feedback. Candidates for better
-          tagging, consolidation, or retirement.
-        </p>
-        {report.never_accessed.length === 0 ? (
-          <div className="reuse-empty">
-            Every knowledge item has been touched at least once.
-          </div>
-        ) : (
-          <ul className="reuse-never-list">
-            {report.never_accessed.map((item) => (
-              <li
-                key={item.id}
-                className="reuse-never-row"
-                onClick={() => onNavigate(item.id)}
-              >
-                {item.claim}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+          <section className="reuse-section">
+            <h2>Top 0-hit keywords</h2>
+            <p className="reuse-section-hint">
+              Queries that returned no results — deduped by normalized key
+              (trim + lowercase + collapse whitespace). Candidates for new
+              knowledge or better tagging.
+            </p>
+            {report.top_0hit_keywords.length === 0 ? (
+              <div className="reuse-empty">
+                No 0-hit queries in this window.
+              </div>
+            ) : (
+              <div className="reuse-zero-list">
+                {report.top_0hit_keywords.map((kw) => (
+                  <div key={kw.normalized_key} className="reuse-zero-row">
+                    <span className="reuse-zero-example">{kw.example_text}</span>
+                    <span className="reuse-zero-count">
+                      {kw.query_count}×
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="reuse-section">
+            <h2>Never accessed</h2>
+            <p className="reuse-section-hint">
+              Items with no exposure, view, or feedback. Candidates for better
+              tagging, consolidation, or retirement.
+              {minAgeInput.trim() !== "" && !Number.isNaN(Number(minAgeInput)) && (
+                <> Filtered to items older than {minAgeInput} day(s).</>
+              )}
+            </p>
+            {report.never_accessed.length === 0 ? (
+              <div className="reuse-empty">
+                Every knowledge item has been touched at least once.
+              </div>
+            ) : (
+              <ul className="reuse-never-list">
+                {report.never_accessed.map((item) => (
+                  <li
+                    key={item.id}
+                    className="reuse-never-row"
+                    onClick={() => onNavigate(item.id)}
+                  >
+                    {item.claim}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
