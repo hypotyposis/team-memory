@@ -18,6 +18,8 @@ You have access to a shared team knowledge base via the Team Memory MCP tools. U
 3. If results are found, call `get_knowledge` to read the full detail. Pass `query_context` describing what task prompted the view.
 4. Use existing knowledge as context. Do not redo analysis that has already been published.
 
+> Every search call (including 0-hit searches and searches whose embedding generation fails) is recorded as a first-class `query` event. Don't skip a search because "it might come back empty" — empty searches are how the team learns what knowledge is missing.
+
 ### After using a knowledge item
 
 Every `get_knowledge` call should be followed by a `reuse_feedback` call once you know whether the item helped:
@@ -26,7 +28,7 @@ Every `get_knowledge` call should be followed by a `reuse_feedback` call once yo
 - `not_useful` — irrelevant to your task, or the claim was wrong.
 - `outdated` — used to be true but no longer applies (consider also publishing a superseding item).
 
-Skipping feedback means the team can't measure which knowledge is actually valuable. Treat `reuse_feedback` as mandatory, not optional.
+`reuse_feedback` is a separate first-class record, not a tag on the view event — it is how the team computes the strong reuse signal (per `(owner, knowledge_id)` pair). Skipping feedback means the team can't measure which knowledge is actually valuable. Treat it as mandatory, not optional.
 
 ### After completing a task
 
