@@ -151,7 +151,7 @@ async function run(): Promise<void> {
 
     await waitForHealth(15_000);
 
-    const keyOut = spawnSync("npx", ["tsx", "src/cli.ts", "create", "e2e-reuse-loop"], {
+    const keyOut = spawnSync("npx", ["tsx", "src/cli.ts", "create", "e2e-reuse-loop", "--unscoped"], {
       cwd: BACKEND_DIR,
       env,
       encoding: "utf8",
