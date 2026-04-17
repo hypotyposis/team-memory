@@ -356,6 +356,13 @@ async function run(): Promise<void> {
       reportAged.never_accessed.length === 0,
       `count=${reportAged.never_accessed.length}`,
     );
+    record(
+      "7b. ?min_age_days=999 → never_accessed_pct stays at unfiltered baseline (pct/list dual contract)",
+      typeof reportAged.never_accessed_pct === "number"
+      && reportAged.never_accessed_pct === reportAfterFirstFeedback.never_accessed_pct
+      && reportAged.never_accessed_pct > 0,
+      `pct=${reportAged.never_accessed_pct} baseline=${reportAfterFirstFeedback.never_accessed_pct}`,
+    );
 
     const failed = checks.filter((c) => !c.ok);
     if (failed.length > 0) {
