@@ -70,3 +70,8 @@ jobs:
         env:
           TEAM_MEMORY_URL: http://localhost:3456
           TEAM_MEMORY_API_KEY: ${{ steps.apikey.outputs.key }}
+
+      - name: Run reuse-loop e2e (ephemeral backend)
+        run: npx tsx e2e/scripts/reuse-loop.ts
+        env:
+          REUSE_LOOP_PORT: 3469
