@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { v4 as uuidv4 } from "uuid";
-import { requireApiAuth, requireOwnerAccess } from "./auth.js";
+import { getOptionalApiAuth, requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
 import { findPersistedDuplicateOf } from "./duplicates.js";
 import { embedKnowledgeItem, embedTexts } from "./embedding.js";
@@ -22,6 +22,7 @@ interface SemanticKnowledgeRow extends KnowledgeRow {
 }
 
 type SearchMode = "fts" | "semantic" | "hybrid";
+type ReuseVerdict = "useful" | "not_useful" | "outdated";
 
 // Prefer semantic signal, but give a small bonus when a row matches both worlds.
 const HYBRID_FTS_WEIGHT = 0.35;
@@ -160,6 +161,42 @@ async function runSemanticCandidates(
 }
 
 const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
+const VALID_REUSE_VERDICTS = new Set<ReuseVerdict>(["useful", "not_useful", "outdated"]);
+
+function recordExposureEvents(
+  db: ReturnType<typeof getDb>,
+  owner: string,
+  knowledgeIds: string[],
+  queryContext: string,
+): void {
+  if (knowledgeIds.length === 0) return;
+
+  const requestId = uuidv4();
+  const insert = db.prepare(
+    `INSERT INTO usage_events (knowledge_id, owner, event_type, request_id, query_context)
+     VALUES (?, ?, 'exposure', ?, ?)`,
+  );
+
+  const transaction = db.transaction((ids: string[]) => {
+    for (const knowledgeId of ids) {
+      insert.run(knowledgeId, owner, requestId, queryContext);
+    }
+  });
+
+  transaction(knowledgeIds);
+}
+
+function recordViewEvent(
+  db: ReturnType<typeof getDb>,
+  owner: string,
+  knowledgeId: string,
+  queryContext: string | null,
+): void {
+  db.prepare(
+    `INSERT INTO usage_events (knowledge_id, owner, event_type, request_id, query_context)
+     VALUES (?, ?, 'view', NULL, ?)`,
+  ).run(knowledgeId, owner, queryContext);
+}
 
 // 1. POST /api/knowledge
 api.post("/knowledge", async (c) => {
@@ -224,6 +261,8 @@ api.post("/knowledge", async (c) => {
 api.get("/knowledge/search", async (c) => {
   const q = c.req.query("q");
   if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
+  const maybeAuth = getOptionalApiAuth(c);
+  if (maybeAuth instanceof Response) return maybeAuth;
   const project = c.req.query("project");
   const tags = c.req.query("tags");
   const module_ = c.req.query("module");
@@ -297,6 +336,10 @@ api.get("/knowledge/search", async (c) => {
     .slice(0, limit)
     .map(({ hybrid_score: _hybridScore, fts_score: _ftsScore, semantic_score: _semanticScore, ...item }) => item);
 
+  if (maybeAuth) {
+    recordExposureEvents(db, maybeAuth.owner, items.map((item) => item.id), q);
+  }
+
   return c.json({ items, total: merged.size });
 });
 
@@ -304,6 +347,8 @@ api.get("/knowledge/search", async (c) => {
 api.get("/knowledge/semantic-search", async (c) => {
   const q = c.req.query("q");
   if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
+  const maybeAuth = getOptionalApiAuth(c);
+  if (maybeAuth instanceof Response) return maybeAuth;
 
   const project = c.req.query("project");
   const limit = Math.min(parseInt(c.req.query("limit") ?? "10", 10) || 10, 100);
@@ -338,10 +383,12 @@ api.get("/knowledge/semantic-search", async (c) => {
     .filter((row): row is ReturnType<typeof summaryFromRow> & { similarity: number } => row !== null)
     .sort((left, right) => right.similarity - left.similarity);
 
-  return c.json({
-    items: ranked.slice(0, limit),
-    total: ranked.length,
-  });
+  const items = ranked.slice(0, limit);
+  if (maybeAuth) {
+    recordExposureEvents(db, maybeAuth.owner, items.map((item) => item.id), q);
+  }
+
+  return c.json({ items, total: ranked.length });
 });
 
 // 4. GET /api/knowledge
@@ -376,10 +423,197 @@ api.get("/knowledge/:id", (c) => {
   const db = getDb();
   const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(c.req.param("id")) as KnowledgeRow | undefined;
   if (!row) return c.json({ error: "Knowledge item not found" }, 404);
+  const maybeAuth = getOptionalApiAuth(c);
+  if (maybeAuth instanceof Response) return maybeAuth;
+  if (maybeAuth) {
+    recordViewEvent(db, maybeAuth.owner, row.id, c.req.query("query_context") ?? null);
+  }
   return c.json(rowToJson(row));
 });
 
-// 6. PATCH /api/knowledge/:id
+// 6. GET /api/reports/reuse
+api.get("/reports/reuse", (c) => {
+  const db = getDb();
+  const knowledgeRows = db.prepare(
+    "SELECT id, claim, created_at FROM knowledge ORDER BY created_at ASC",
+  ).all() as Array<{ id: string; claim: string; created_at: string }>;
+  const usageRows = db.prepare(
+    "SELECT knowledge_id, owner, event_type, request_id FROM usage_events",
+  ).all() as Array<{
+    knowledge_id: string;
+    owner: string;
+    event_type: "exposure" | "view";
+    request_id: string | null;
+  }>;
+  const feedbackRows = db.prepare(
+    "SELECT knowledge_id, owner, verdict FROM reuse_feedback",
+  ).all() as Array<{
+    knowledge_id: string;
+    owner: string;
+    verdict: ReuseVerdict;
+  }>;
+
+  const stats = new Map<string, {
+    claim: string;
+    exposure_count: number;
+    view_count: number;
+    view_owners: Set<string>;
+    useful_owners: Set<string>;
+    useful_feedback_count: number;
+    not_useful_feedback_count: number;
+    outdated_feedback_count: number;
+  }>();
+
+  for (const row of knowledgeRows) {
+    stats.set(row.id, {
+      claim: row.claim,
+      exposure_count: 0,
+      view_count: 0,
+      view_owners: new Set<string>(),
+      useful_owners: new Set<string>(),
+      useful_feedback_count: 0,
+      not_useful_feedback_count: 0,
+      outdated_feedback_count: 0,
+    });
+  }
+
+  const queryIds = new Set<string>();
+  for (const row of usageRows) {
+    const item = stats.get(row.knowledge_id);
+    if (!item) continue;
+
+    if (row.event_type === "exposure") {
+      item.exposure_count += 1;
+      if (row.request_id) queryIds.add(row.request_id);
+      continue;
+    }
+
+    item.view_count += 1;
+    item.view_owners.add(row.owner);
+  }
+
+  for (const row of feedbackRows) {
+    const item = stats.get(row.knowledge_id);
+    if (!item) continue;
+
+    if (row.verdict === "useful") {
+      item.useful_feedback_count += 1;
+      item.useful_owners.add(row.owner);
+    } else if (row.verdict === "not_useful") {
+      item.not_useful_feedback_count += 1;
+    } else {
+      item.outdated_feedback_count += 1;
+    }
+  }
+
+  const totalItems = knowledgeRows.length;
+  const neverAccessed = knowledgeRows
+    .filter((row) => {
+      const item = stats.get(row.id);
+      if (!item) return false;
+      return (
+        item.exposure_count === 0
+        && item.view_count === 0
+        && item.useful_feedback_count === 0
+        && item.not_useful_feedback_count === 0
+        && item.outdated_feedback_count === 0
+      );
+    })
+    .map((row) => ({ id: row.id, claim: row.claim }));
+
+  const northStarCount = knowledgeRows.filter((row) => {
+    const item = stats.get(row.id);
+    if (!item) return false;
+
+    const owners = new Set<string>([
+      ...item.view_owners,
+      ...item.useful_owners,
+    ]);
+    return owners.size >= 2;
+  }).length;
+
+  const topReused = knowledgeRows
+    .map((row) => {
+      const item = stats.get(row.id)!;
+      const uniqueOwners = new Set<string>([
+        ...item.view_owners,
+        ...item.useful_owners,
+      ]);
+      return {
+        knowledge_id: row.id,
+        claim: row.claim,
+        view_count: item.view_count,
+        unique_owners: uniqueOwners.size,
+        useful_feedback_count: item.useful_feedback_count,
+        not_useful_feedback_count: item.not_useful_feedback_count,
+        outdated_feedback_count: item.outdated_feedback_count,
+        reuse_score: item.view_count + item.useful_feedback_count,
+      };
+    })
+    .filter((item) => item.reuse_score > 0)
+    .sort((left, right) => {
+      if (right.reuse_score !== left.reuse_score) {
+        return right.reuse_score - left.reuse_score;
+      }
+      if (right.unique_owners !== left.unique_owners) {
+        return right.unique_owners - left.unique_owners;
+      }
+      return left.claim.localeCompare(right.claim);
+    })
+    .slice(0, 10)
+    .map(({ reuse_score: _reuseScore, ...item }) => item);
+
+  const neverAccessedPct = totalItems === 0 ? 0 : neverAccessed.length / totalItems;
+  const northStar = totalItems === 0 ? 0 : northStarCount / totalItems;
+
+  return c.json({
+    total_queries: queryIds.size,
+    total_views: usageRows.filter((row) => row.event_type === "view").length,
+    total_items: totalItems,
+    never_accessed_pct: neverAccessedPct,
+    north_star: northStar,
+    top_reused: topReused,
+    never_accessed: neverAccessed,
+  });
+});
+
+// 7. POST /api/knowledge/:id/feedback
+api.post("/knowledge/:id/feedback", async (c) => {
+  const id = c.req.param("id");
+  const db = getDb();
+  const row = db.prepare("SELECT id FROM knowledge WHERE id = ?").get(id) as { id: string } | undefined;
+  if (!row) return c.json({ error: "Knowledge item not found" }, 404);
+
+  const auth = requireApiAuth(c);
+  if (auth instanceof Response) return auth;
+
+  const body = await c.req.json();
+  const verdict = body.verdict as ReuseVerdict | undefined;
+  const comment = body.comment;
+
+  if (!verdict || !VALID_REUSE_VERDICTS.has(verdict)) {
+    return c.json({ error: "verdict must be one of: useful, not_useful, outdated" }, 400);
+  }
+  if (comment !== undefined && comment !== null && typeof comment !== "string") {
+    return c.json({ error: "comment must be a string when provided" }, 400);
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO reuse_feedback (knowledge_id, owner, verdict, comment, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, auth.owner, verdict, comment ?? null, now);
+
+  return c.json({
+    knowledge_id: id,
+    owner: auth.owner,
+    verdict,
+    comment: comment ?? null,
+    created_at: now,
+  }, 201);
+});
+
+// 8. PATCH /api/knowledge/:id
 api.patch("/knowledge/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json();
