@@ -648,10 +648,12 @@ api.post("/tasks/start", async (c) => {
   const project = body.project ?? null;
   const maxMatches = (maxMatchesInput as number | undefined) ?? 10;
   const db = getDb();
+  const scopedProjects = resolveScopedProjects(project ?? undefined, auth);
+  const taskProject = projectLabelForUsage(project ?? undefined, scopedProjects);
 
   const results = await runHybridSearch(db, {
     query: description,
-    projects: project ? [project] : undefined,
+    projects: scopedProjects ?? undefined,
     includeSuperseded: false,
     limit: maxMatches,
   });
@@ -664,10 +666,10 @@ api.post("/tasks/start", async (c) => {
   );
 
   db.transaction(() => {
-    insertTask.run(taskId, auth.owner, project, description, openedAt);
+    insertTask.run(taskId, auth.owner, taskProject, description, openedAt);
     recordSearchEvents(db, auth.owner, {
       items: results.items.map((item) => ({ id: item.id, project: item.project })),
-      project,
+      project: taskProject,
       taskId,
       queryText: description,
       searchMode: "hybrid",
@@ -677,7 +679,7 @@ api.post("/tasks/start", async (c) => {
   return c.json({
     task_id: taskId,
     description,
-    project,
+    project: taskProject,
     retrieval_mode: results.retrievalMode,
     matches: results.items,
   }, 201);

@@ -235,3 +235,29 @@ test("unauthenticated requests remain unscoped when project is omitted", async (
   assertSameIds(body.items, ["alpha-row", "beta-row"]);
   assert.equal(body.total, 2);
 });
+
+test("start_task inherits a single-project API-key scope when project is omitted", async () => {
+  const db = getDb();
+  insertKnowledgeRow(db, { id: "alpha-auth", claim: "Auth note in alpha", project: "alpha" });
+  insertKnowledgeRow(db, { id: "beta-auth", claim: "Auth note in beta", project: "beta" });
+  const apiKey = createApiKey("TaskScopedOwner", ["alpha"]);
+
+  const response = await app.request("http://localhost/api/tasks/start", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ description: "auth" }),
+  });
+
+  assert.equal(response.status, 201);
+  const body = await response.json() as {
+    task_id: string;
+    project: string | null;
+    matches: Array<{ id: string }>;
+  };
+  assert.equal(typeof body.task_id, "string");
+  assert.equal(body.project, "alpha");
+  assertSameIds(body.matches, ["alpha-auth"]);
+});
