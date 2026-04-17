@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { v4 as uuidv4 } from "uuid";
 import { getOptionalApiAuth, requireApiAuth, requireOwnerAccess } from "./auth.js";
 import { getDb } from "./db.js";
@@ -23,6 +24,51 @@ interface SemanticKnowledgeRow extends KnowledgeRow {
 
 type SearchMode = "fts" | "semantic" | "hybrid";
 type ReuseVerdict = "useful" | "not_useful" | "outdated";
+type TaskStatus = "open" | "completed" | "abandoned";
+
+interface TaskRow {
+  task_id: string;
+  owner: string;
+  project: string | null;
+  description: string;
+  status: TaskStatus;
+  opened_at: string;
+  closed_at: string | null;
+}
+
+interface PublishKnowledgeInput {
+  claim?: unknown;
+  detail?: unknown;
+  source?: unknown;
+  project?: unknown;
+  module?: unknown;
+  tags?: unknown;
+  confidence?: unknown;
+  staleness_hint?: unknown;
+  related_to?: unknown;
+  supersedes?: unknown;
+}
+
+interface PublishKnowledgeSuccess {
+  ok: true;
+  status: 201;
+  id: string;
+  body: ReturnType<typeof rowToJson> & {
+    warnings: Array<{
+      code: string;
+      message: string;
+      matches: ReturnType<typeof detectPossibleDuplicates>;
+    }>;
+  };
+}
+
+interface PublishKnowledgeFailure {
+  ok: false;
+  status: number;
+  error: string;
+}
+
+type PublishKnowledgeResult = PublishKnowledgeSuccess | PublishKnowledgeFailure;
 
 interface TrackedSearchItem {
   id: string;
@@ -176,163 +222,45 @@ async function runSemanticCandidates(
     .slice(0, input.candidateLimit);
 }
 
-const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
-const VALID_REUSE_VERDICTS = new Set<ReuseVerdict>(["useful", "not_useful", "outdated"]);
-
-function recordSearchEvents(
+async function runHybridSearch(
   db: ReturnType<typeof getDb>,
-  owner: string,
   input: {
-    items: TrackedSearchItem[];
-    project: string | null;
-    queryText: string;
-    searchMode: SearchMode;
+    query: string;
+    project?: string;
+    module?: string;
+    includeSuperseded: boolean;
+    tags?: string[];
+    limit: number;
   },
-): void {
-  const requestId = uuidv4();
-  const insertQuery = db.prepare(
-    `INSERT INTO usage_events (
-      knowledge_id, owner, event_type, request_id, query_text,
-      result_count, project, search_mode, query_context
-    ) VALUES (NULL, ?, 'query', ?, ?, ?, ?, ?, NULL)`,
-  );
-  const insertExposure = db.prepare(
-    `INSERT INTO usage_events (
-      knowledge_id, owner, event_type, request_id, query_text,
-      result_count, project, search_mode, query_context
-    ) VALUES (?, ?, 'exposure', ?, NULL, NULL, ?, ?, ?)`,
-  );
-
-  const transaction = db.transaction((items: TrackedSearchItem[]) => {
-    insertQuery.run(
-      owner,
-      requestId,
-      input.queryText,
-      items.length,
-      input.project ?? "",
-      input.searchMode,
-    );
-
-    for (const item of items) {
-      insertExposure.run(
-        item.id,
-        owner,
-        requestId,
-        item.project,
-        input.searchMode,
-        input.queryText,
-      );
-    }
-  });
-
-  transaction(input.items);
-}
-
-function recordViewEvent(
-  db: ReturnType<typeof getDb>,
-  owner: string,
-  knowledgeId: string,
-  project: string,
-  queryContext: string | null,
-): void {
-  db.prepare(
-    `INSERT INTO usage_events (
-      knowledge_id, owner, event_type, request_id, query_text,
-      result_count, project, search_mode, query_context
-    ) VALUES (?, ?, 'view', NULL, NULL, NULL, ?, NULL, ?)`,
-  ).run(knowledgeId, owner, project, queryContext);
-}
-
-// 1. POST /api/knowledge
-api.post("/knowledge", async (c) => {
-  const auth = requireApiAuth(c);
-  if (auth instanceof Response) return auth;
-
-  const body = await c.req.json();
-  const missing: string[] = [];
-  for (const f of ["claim", "source", "project", "tags", "confidence", "staleness_hint"]) {
-    if (body[f] === undefined || body[f] === null || body[f] === "") missing.push(f);
-  }
-  if (missing.length > 0) return c.json({ error: `Missing required fields: ${missing.join(", ")}` }, 400);
-  if (!Array.isArray(body.source) || body.source.length === 0) return c.json({ error: "source must be a non-empty array of strings" }, 400);
-  if (!Array.isArray(body.tags) || body.tags.length === 0) return c.json({ error: "tags must be a non-empty array of strings" }, 400);
-  if (!VALID_CONFIDENCE.has(body.confidence)) return c.json({ error: "confidence must be one of: high, medium, low" }, 400);
-
-  const db = getDb();
-  const id = uuidv4();
-  const now = new Date().toISOString();
-  const embedding = await embedKnowledgeItem(body.claim, body.detail ?? null);
-  const duplicates = detectPossibleDuplicates(db, {
-    claim: body.claim,
-    project: body.project,
-    embedding,
-  });
-  const duplicateOf = findPersistedDuplicateOf(body.claim, body.project, duplicates);
-
-  if (body.supersedes) {
-    const old = db.prepare("SELECT id, superseded_by FROM knowledge WHERE id = ?").get(body.supersedes) as { id: string; superseded_by: string | null } | undefined;
-    if (!old) return c.json({ error: `Superseded item not found: ${body.supersedes}` }, 400);
-    if (old.superseded_by) return c.json({ error: `Item ${body.supersedes} is already superseded by ${old.superseded_by}` }, 400);
-  }
-
-  if (body.related_to && Array.isArray(body.related_to)) {
-    for (const relId of body.related_to) {
-      if (!db.prepare("SELECT 1 FROM knowledge WHERE id = ?").get(relId))
-        return c.json({ error: `Related item not found: ${relId}` }, 400);
-    }
-  }
-
-  const insert = db.prepare(`INSERT INTO knowledge (id, claim, detail, source, project, module, tags, confidence, staleness_hint, owner, related_to, supersedes, superseded_by, duplicate_of, embedding, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`);
-  const updateSuperseded = db.prepare("UPDATE knowledge SET superseded_by = ? WHERE id = ?");
-
-  db.transaction(() => {
-    insert.run(id, body.claim, body.detail ?? null, JSON.stringify(body.source), body.project, body.module ?? null, JSON.stringify(body.tags), body.confidence, body.staleness_hint, auth.owner, JSON.stringify(body.related_to ?? []), body.supersedes ?? null, duplicateOf, embedding, now, now);
-    if (body.supersedes) updateSuperseded.run(id, body.supersedes);
-  })();
-
-  const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(id) as KnowledgeRow;
-  const responseBody = rowToJson(row);
-  const warnings = duplicates.length > 0
-    ? [{
-        code: "possible_duplicate",
-        message: `Found ${duplicates.length} possible duplicate knowledge item(s) in project ${body.project}`,
-        matches: duplicates,
-      }]
-    : [];
-  return c.json({ ...responseBody, warnings }, 201);
-});
-
-// 2. GET /api/knowledge/search
-api.get("/knowledge/search", async (c) => {
-  const q = c.req.query("q");
-  if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
-  const maybeAuth = getOptionalApiAuth(c);
-  if (maybeAuth instanceof Response) return maybeAuth;
-  const project = c.req.query("project");
-  const tags = c.req.query("tags");
-  const module_ = c.req.query("module");
-  const includeSuperseded = c.req.query("include_superseded") === "true";
-  const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
-  const db = getDb();
-  const requestedTags = parseTagList(tags);
-  const candidateLimit = Math.max(limit * 3, limit);
+): Promise<{
+  items: SearchResultItem[];
+  total: number;
+  retrievalMode: "fts" | "hybrid";
+}> {
+  const candidateLimit = Math.max(input.limit * 3, input.limit);
   const conditions: string[] = [];
   const params: (string | number)[] = [];
-  if (!includeSuperseded) conditions.push("k.superseded_by IS NULL");
-  if (project) { conditions.push("k.project = ?"); params.push(project); }
-  if (module_) { conditions.push("k.module = ?"); params.push(module_); }
+  if (!input.includeSuperseded) conditions.push("k.superseded_by IS NULL");
+  if (input.project) {
+    conditions.push("k.project = ?");
+    params.push(input.project);
+  }
+  if (input.module) {
+    conditions.push("k.module = ?");
+    params.push(input.module);
+  }
   const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
   const sql = `SELECT k.*, rank FROM knowledge_fts fts JOIN knowledge k ON k.rowid = fts.rowid WHERE knowledge_fts MATCH ? ${whereClause} ORDER BY rank LIMIT ?`;
-  const ftsRows = db.prepare(sql).all(q, ...params, candidateLimit) as FtsSearchRow[];
-  const filteredFtsRows = ftsRows.filter((row) => matchesRequestedTags(row, requestedTags));
+  const ftsRows = db.prepare(sql).all(input.query, ...params, candidateLimit) as FtsSearchRow[];
+  const filteredFtsRows = ftsRows.filter((row) => matchesRequestedTags(row, input.tags));
   const ftsScores = normalizedFtsScores(filteredFtsRows);
 
   const semanticRows = await runSemanticCandidates(db, {
-    query: q,
-    project: project ?? undefined,
-    module: module_ ?? undefined,
-    includeSuperseded,
-    tags: requestedTags,
+    query: input.query,
+    project: input.project,
+    module: input.module,
+    includeSuperseded: input.includeSuperseded,
+    tags: input.tags,
     candidateLimit,
   });
 
@@ -378,19 +306,440 @@ api.get("/knowledge/search", async (c) => {
 
   const items = Array.from(merged.values())
     .sort(compareSearchResults)
-    .slice(0, limit)
+    .slice(0, input.limit)
     .map(({ hybrid_score: _hybridScore, fts_score: _ftsScore, semantic_score: _semanticScore, ...item }) => item);
+
+  return {
+    items,
+    total: merged.size,
+    retrievalMode: "hybrid",
+  };
+}
+
+const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
+const VALID_REUSE_VERDICTS = new Set<ReuseVerdict>(["useful", "not_useful", "outdated"]);
+const VALID_TASK_STATUSES = new Set<TaskStatus>(["open", "completed", "abandoned"]);
+
+function jsonTaskError(
+  c: Context,
+  status: 400 | 401 | 403 | 404 | 409,
+  error: string,
+  code: string,
+): Response {
+  return c.json({ error, code }, status);
+}
+
+function resolveTaskTrace(
+  c: Context,
+  taskId: string | null | undefined,
+  auth: { owner: string } | Response | null,
+): TaskRow | Response | null {
+  if (!taskId) return null;
+  if (auth instanceof Response) return auth;
+  if (!auth) {
+    return jsonTaskError(c, 401, "Missing Authorization: Bearer <api_key> header", "auth_missing");
+  }
+
+  const db = getDb();
+  const task = db.prepare(
+    "SELECT task_id, owner, project, description, status, opened_at, closed_at FROM tasks WHERE task_id = ?",
+  ).get(taskId) as TaskRow | undefined;
+
+  if (!task) {
+    return jsonTaskError(c, 404, "Task not found", "task_not_found");
+  }
+  if (task.owner !== auth.owner) {
+    return jsonTaskError(c, 403, "Only the task owner can use this task_id", "task_owner_forbidden");
+  }
+  return task;
+}
+
+function resolveTaskForClosure(c: Context, taskId: string, auth: { owner: string } | Response): TaskRow | Response {
+  if (auth instanceof Response) return auth;
+
+  const db = getDb();
+  const task = db.prepare(
+    "SELECT task_id, owner, project, description, status, opened_at, closed_at FROM tasks WHERE task_id = ?",
+  ).get(taskId) as TaskRow | undefined;
+
+  if (!task) {
+    return jsonTaskError(c, 404, "Task not found", "task_not_found");
+  }
+  if (task.owner !== auth.owner) {
+    return jsonTaskError(c, 403, "Only the task owner can close this task", "task_owner_forbidden");
+  }
+  if (task.status !== "open") {
+    return jsonTaskError(c, 409, "Task is already closed", "task_already_closed");
+  }
+  return task;
+}
+
+async function publishKnowledgeItem(
+  db: ReturnType<typeof getDb>,
+  owner: string,
+  body: PublishKnowledgeInput,
+  taskId?: string,
+): Promise<PublishKnowledgeResult> {
+  const missing: string[] = [];
+  for (const field of ["claim", "source", "project", "tags", "confidence", "staleness_hint"] as const) {
+    if (body[field] === undefined || body[field] === null || body[field] === "") {
+      missing.push(field);
+    }
+  }
+  if (missing.length > 0) {
+    return { ok: false, status: 400, error: `Missing required fields: ${missing.join(", ")}` };
+  }
+  if (!Array.isArray(body.source) || body.source.length === 0) {
+    return { ok: false, status: 400, error: "source must be a non-empty array of strings" };
+  }
+  if (!Array.isArray(body.tags) || body.tags.length === 0) {
+    return { ok: false, status: 400, error: "tags must be a non-empty array of strings" };
+  }
+  const confidenceInput = body.confidence;
+  if (!VALID_CONFIDENCE.has(confidenceInput as string)) {
+    return { ok: false, status: 400, error: "confidence must be one of: high, medium, low" };
+  }
+
+  const claim = String(body.claim);
+  const project = String(body.project);
+  const detail = body.detail == null ? null : String(body.detail);
+  const module = body.module == null ? null : String(body.module);
+  const stalenessHint = String(body.staleness_hint);
+  const source = body.source as string[];
+  const tags = body.tags as string[];
+  const confidence = confidenceInput as string;
+  const relatedTo = body.related_to === undefined ? [] : body.related_to;
+  const supersedes = body.supersedes == null ? null : String(body.supersedes);
+
+  const id = uuidv4();
+  const now = new Date().toISOString();
+  const embedding = await embedKnowledgeItem(claim, detail);
+  const duplicates = detectPossibleDuplicates(db, {
+    claim,
+    project,
+    embedding,
+  });
+  const duplicateOf = findPersistedDuplicateOf(claim, project, duplicates);
+
+  if (supersedes) {
+    const old = db.prepare("SELECT id, superseded_by FROM knowledge WHERE id = ?").get(supersedes) as { id: string; superseded_by: string | null } | undefined;
+    if (!old) return { ok: false, status: 400, error: `Superseded item not found: ${supersedes}` };
+    if (old.superseded_by) {
+      return { ok: false, status: 400, error: `Item ${supersedes} is already superseded by ${old.superseded_by}` };
+    }
+  }
+
+  if (relatedTo && Array.isArray(relatedTo)) {
+    for (const relId of relatedTo) {
+      if (!db.prepare("SELECT 1 FROM knowledge WHERE id = ?").get(String(relId))) {
+        return { ok: false, status: 400, error: `Related item not found: ${String(relId)}` };
+      }
+    }
+  }
+
+  const insert = db.prepare(
+    `INSERT INTO knowledge (
+      id, claim, detail, source, project, module, tags, confidence,
+      staleness_hint, owner, related_to, supersedes, superseded_by,
+      duplicate_of, embedding, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+  );
+  const updateSuperseded = db.prepare("UPDATE knowledge SET superseded_by = ? WHERE id = ?");
+  const linkTaskPublication = db.prepare(
+    "INSERT INTO task_publications (task_id, knowledge_id, created_at) VALUES (?, ?, ?)",
+  );
+
+  db.transaction(() => {
+    insert.run(
+      id,
+      claim,
+      detail,
+      JSON.stringify(source),
+      project,
+      module,
+      JSON.stringify(tags),
+      confidence,
+      stalenessHint,
+      owner,
+      JSON.stringify(Array.isArray(relatedTo) ? relatedTo : []),
+      supersedes,
+      duplicateOf,
+      embedding,
+      now,
+      now,
+    );
+    if (supersedes) {
+      updateSuperseded.run(id, supersedes);
+    }
+    if (taskId) {
+      linkTaskPublication.run(taskId, id, now);
+    }
+  })();
+
+  const row = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(id) as KnowledgeRow;
+  const warnings = duplicates.length > 0
+    ? [{
+        code: "possible_duplicate",
+        message: `Found ${duplicates.length} possible duplicate knowledge item(s) in project ${project}`,
+        matches: duplicates,
+      }]
+    : [];
+
+  return {
+    ok: true,
+    status: 201,
+    id,
+    body: {
+      ...rowToJson(row),
+      warnings,
+    },
+  };
+}
+
+function recordSearchEvents(
+  db: ReturnType<typeof getDb>,
+  owner: string,
+  input: {
+    items: TrackedSearchItem[];
+    project: string | null;
+    taskId?: string | null;
+    queryText: string;
+    searchMode: SearchMode;
+  },
+): void {
+  const requestId = uuidv4();
+  const insertQuery = db.prepare(
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, task_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (NULL, ?, 'query', ?, ?, ?, ?, ?, ?, NULL)`,
+  );
+  const insertExposure = db.prepare(
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, task_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (?, ?, 'exposure', ?, ?, NULL, NULL, ?, ?, ?)`,
+  );
+
+  const transaction = db.transaction((items: TrackedSearchItem[]) => {
+    insertQuery.run(
+      owner,
+      requestId,
+      input.taskId ?? null,
+      input.queryText,
+      items.length,
+      input.project ?? "",
+      input.searchMode,
+    );
+
+    for (const item of items) {
+      insertExposure.run(
+        item.id,
+        owner,
+        requestId,
+        input.taskId ?? null,
+        item.project,
+        input.searchMode,
+        input.queryText,
+      );
+    }
+  });
+
+  transaction(input.items);
+}
+
+function recordViewEvent(
+  db: ReturnType<typeof getDb>,
+  owner: string,
+  knowledgeId: string,
+  project: string,
+  queryContext: string | null,
+  taskId: string | null,
+): void {
+  db.prepare(
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, task_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (?, ?, 'view', NULL, ?, NULL, NULL, ?, NULL, ?)`,
+  ).run(knowledgeId, owner, taskId, project, queryContext);
+}
+
+// 1. POST /api/knowledge
+api.post("/knowledge", async (c) => {
+  const auth = requireApiAuth(c);
+  if (auth instanceof Response) return auth;
+
+  const db = getDb();
+  const body = await c.req.json() as PublishKnowledgeInput;
+  const result = await publishKnowledgeItem(db, auth.owner, body);
+  if (!result.ok) {
+    return c.json({ error: result.error }, result.status as 400);
+  }
+  return c.json(result.body, result.status);
+});
+
+// 1b. POST /api/tasks/start
+api.post("/tasks/start", async (c) => {
+  const auth = requireApiAuth(c);
+  if (auth instanceof Response) return auth;
+
+  const body = await c.req.json() as {
+    description?: unknown;
+    project?: unknown;
+    max_matches?: unknown;
+  };
+
+  if (body.description === undefined || body.description === null || body.description === "") {
+    return jsonTaskError(c, 400, "description is required", "task_description_required");
+  }
+  if (typeof body.description !== "string") {
+    return jsonTaskError(c, 400, "description must be a string", "task_description_invalid");
+  }
+  if (body.project !== undefined && body.project !== null && typeof body.project !== "string") {
+    return jsonTaskError(c, 400, "project must be a string when provided", "task_project_invalid");
+  }
+  const maxMatchesInput = body.max_matches;
+  if (
+    maxMatchesInput !== undefined
+    && maxMatchesInput !== null
+    && (typeof maxMatchesInput !== "number" || !Number.isInteger(maxMatchesInput) || maxMatchesInput < 1 || maxMatchesInput > 100)
+  ) {
+    return jsonTaskError(c, 400, "max_matches must be an integer between 1 and 100", "task_max_matches_invalid");
+  }
+
+  const description = body.description;
+  const project = body.project ?? null;
+  const maxMatches = (maxMatchesInput as number | undefined) ?? 10;
+  const db = getDb();
+
+  const results = await runHybridSearch(db, {
+    query: description,
+    project: project ?? undefined,
+    includeSuperseded: false,
+    limit: maxMatches,
+  });
+
+  const taskId = uuidv4();
+  const openedAt = new Date().toISOString();
+  const insertTask = db.prepare(
+    `INSERT INTO tasks (task_id, owner, project, description, status, opened_at, closed_at)
+     VALUES (?, ?, ?, ?, 'open', ?, NULL)`,
+  );
+
+  db.transaction(() => {
+    insertTask.run(taskId, auth.owner, project, description, openedAt);
+    recordSearchEvents(db, auth.owner, {
+      items: results.items.map((item) => ({ id: item.id, project: item.project })),
+      project,
+      taskId,
+      queryText: description,
+      searchMode: "hybrid",
+    });
+  })();
+
+  return c.json({
+    task_id: taskId,
+    description,
+    project,
+    retrieval_mode: results.retrievalMode,
+    matches: results.items,
+  }, 201);
+});
+
+// 1c. POST /api/tasks/:task_id/end
+api.post("/tasks/:task_id/end", async (c) => {
+  const auth = requireApiAuth(c);
+  if (auth instanceof Response) return auth;
+
+  const body = await c.req.json() as {
+    status?: unknown;
+    findings?: unknown;
+  };
+
+  const status = (body.status as TaskStatus | undefined) ?? "completed";
+  if (!VALID_TASK_STATUSES.has(status) || status === "open") {
+    return jsonTaskError(c, 400, "status must be one of: completed, abandoned", "task_status_invalid");
+  }
+  if (body.findings !== undefined && !Array.isArray(body.findings)) {
+    return jsonTaskError(c, 400, "findings must be an array when provided", "task_findings_invalid");
+  }
+
+  const task = resolveTaskForClosure(c, c.req.param("task_id"), auth);
+  if (task instanceof Response) return task;
+
+  const db = getDb();
+  const closedAt = new Date().toISOString();
+  db.prepare(
+    "UPDATE tasks SET status = ?, closed_at = ? WHERE task_id = ?",
+  ).run(status, closedAt, task.task_id);
+
+  const durationMs = Math.max(0, Date.parse(closedAt) - Date.parse(task.opened_at));
+  const publishedIds: string[] = [];
+  const findings = (body.findings as PublishKnowledgeInput[] | undefined) ?? [];
+
+  for (let index = 0; index < findings.length; index += 1) {
+    const result = await publishKnowledgeItem(db, auth.owner, findings[index]!, task.task_id);
+    if (!result.ok) {
+      return c.json({
+        task_id: task.task_id,
+        status,
+        published_ids: publishedIds,
+        duration_ms: durationMs,
+        error: {
+          code: "task_publish_failed",
+          failed_index: index,
+          publish_status: result.status,
+          publish_error: result.error,
+        },
+      }, result.status as 400);
+    }
+
+    publishedIds.push(result.id);
+  }
+
+  return c.json({
+    task_id: task.task_id,
+    status,
+    published_ids: publishedIds,
+    duration_ms: durationMs,
+  });
+});
+
+// 2. GET /api/knowledge/search
+api.get("/knowledge/search", async (c) => {
+  const q = c.req.query("q");
+  if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
+  const maybeAuth = getOptionalApiAuth(c);
+  if (maybeAuth instanceof Response) return maybeAuth;
+  const taskTrace = resolveTaskTrace(c, c.req.query("task_id"), maybeAuth);
+  if (taskTrace instanceof Response) return taskTrace;
+  const project = c.req.query("project");
+  const tags = c.req.query("tags");
+  const module_ = c.req.query("module");
+  const includeSuperseded = c.req.query("include_superseded") === "true";
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
+  const db = getDb();
+  const requestedTags = parseTagList(tags);
+  const results = await runHybridSearch(db, {
+    query: q,
+    project: project ?? undefined,
+    module: module_ ?? undefined,
+    includeSuperseded,
+    tags: requestedTags,
+    limit,
+  });
 
   if (maybeAuth) {
     recordSearchEvents(db, maybeAuth.owner, {
-      items: items.map((item) => ({ id: item.id, project: item.project })),
+      items: results.items.map((item) => ({ id: item.id, project: item.project })),
       project: project ?? null,
+      taskId: taskTrace?.task_id ?? null,
       queryText: q,
       searchMode: "hybrid",
     });
   }
 
-  return c.json({ items, total: merged.size });
+  return c.json({ items: results.items, total: results.total });
 });
 
 // 3. GET /api/knowledge/semantic-search
@@ -399,6 +748,8 @@ api.get("/knowledge/semantic-search", async (c) => {
   if (!q) return c.json({ error: "Query parameter 'q' is required" }, 400);
   const maybeAuth = getOptionalApiAuth(c);
   if (maybeAuth instanceof Response) return maybeAuth;
+  const taskTrace = resolveTaskTrace(c, c.req.query("task_id"), maybeAuth);
+  if (taskTrace instanceof Response) return taskTrace;
 
   const project = c.req.query("project");
   const limit = Math.min(parseInt(c.req.query("limit") ?? "10", 10) || 10, 100);
@@ -410,6 +761,7 @@ api.get("/knowledge/semantic-search", async (c) => {
       recordSearchEvents(db, maybeAuth.owner, {
         items: [],
         project: project ?? null,
+        taskId: taskTrace?.task_id ?? null,
         queryText: q,
         searchMode: "semantic",
       });
@@ -446,6 +798,7 @@ api.get("/knowledge/semantic-search", async (c) => {
     recordSearchEvents(db, maybeAuth.owner, {
       items: items.map((item) => ({ id: item.id, project: item.project })),
       project: project ?? null,
+      taskId: taskTrace?.task_id ?? null,
       queryText: q,
       searchMode: "semantic",
     });
@@ -488,8 +841,17 @@ api.get("/knowledge/:id", (c) => {
   if (!row) return c.json({ error: "Knowledge item not found" }, 404);
   const maybeAuth = getOptionalApiAuth(c);
   if (maybeAuth instanceof Response) return maybeAuth;
+  const taskTrace = resolveTaskTrace(c, c.req.query("task_id"), maybeAuth);
+  if (taskTrace instanceof Response) return taskTrace;
   if (maybeAuth) {
-    recordViewEvent(db, maybeAuth.owner, row.id, row.project, c.req.query("query_context") ?? null);
+    recordViewEvent(
+      db,
+      maybeAuth.owner,
+      row.id,
+      row.project,
+      c.req.query("query_context") ?? null,
+      taskTrace?.task_id ?? null,
+    );
   }
   return c.json(rowToJson(row));
 });
@@ -776,6 +1138,8 @@ api.post("/knowledge/:id/feedback", async (c) => {
   if (auth instanceof Response) return auth;
 
   const body = await c.req.json();
+  const taskTrace = resolveTaskTrace(c, body.task_id as string | undefined, auth);
+  if (taskTrace instanceof Response) return taskTrace;
   const verdict = body.verdict as ReuseVerdict | undefined;
   const comment = body.comment;
 
@@ -788,9 +1152,9 @@ api.post("/knowledge/:id/feedback", async (c) => {
 
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO reuse_feedback (knowledge_id, owner, verdict, comment, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, auth.owner, verdict, comment ?? null, now);
+    `INSERT INTO reuse_feedback (knowledge_id, owner, verdict, comment, task_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, auth.owner, verdict, comment ?? null, taskTrace?.task_id ?? null, now);
 
   return c.json({
     knowledge_id: id,
