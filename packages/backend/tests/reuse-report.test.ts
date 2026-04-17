@@ -549,3 +549,27 @@ test("reuse report applies min_age_days only to never_accessed", async () => {
     { id: "old-never-accessed", claim: "Old untouched item." },
   ]);
 });
+
+test("reuse report keeps never_accessed_pct on the unfiltered baseline when min_age_days is set", async () => {
+  const db = getDb();
+  insertKnowledgeRow(db, {
+    id: "older-never-accessed",
+    claim: "Older untouched item.",
+    createdAt: daysAgo(30),
+  });
+  insertKnowledgeRow(db, {
+    id: "younger-never-accessed",
+    claim: "Younger untouched item.",
+    createdAt: daysAgo(2),
+  });
+
+  const response = await app.request(
+    "http://localhost/api/reports/reuse?min_age_days=7",
+  );
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as ReuseReportResponse;
+
+  assert.equal(body.never_accessed.length, 1);
+  assert.equal(body.never_accessed_pct, 1);
+});
