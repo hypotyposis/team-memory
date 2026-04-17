@@ -72,7 +72,20 @@ Publish a new knowledge item. **Auth required.**
 | `related_to` | string[] | no | Array of existing knowledge ids; invalid ids return `400`. |
 | `supersedes` | string | no | Existing knowledge id. Sets `superseded_by` on the referenced item. |
 
-The response body includes a `warnings[]` array when the publish encounters a possible-duplicate match (configurable via the duplicate-detection thresholds). Duplicates are surfaced as warnings, not errors — the item is still persisted.
+**Minimal valid request body**
+
+```json
+{
+  "claim": "FTS5 sanitizer tokenizes user input before MATCH",
+  "source": ["packages/backend/src/routes.ts"],
+  "project": "team-memory",
+  "tags": ["architecture", "search"],
+  "confidence": "high",
+  "staleness_hint": "Recheck if FTS5 syntax extensions change."
+}
+```
+
+Note that `source` and `tags` are **string arrays**, not strings — a common first-attempt mistake when seeding manually. The response body includes a `warnings[]` array when the publish encounters a possible-duplicate match (configurable via the duplicate-detection thresholds). Duplicates are surfaced as warnings, not errors — the item is still persisted.
 
 **Response — 201**
 
