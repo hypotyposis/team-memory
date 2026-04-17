@@ -2,6 +2,16 @@
 
 This document defines how agents should interact with Team Memory in their daily workflows. The goal is simple: **no agent should redo work that another agent already published**.
 
+## Programmatic Key Provisioning
+
+If you are wiring Team Memory into an orchestrator, CI job, or launcher, prefer the admin REST primitive (`POST /api/admin/keys`) over shelling into the backend host. The route is framework-neutral, returns the secret once, and carries the same scoped-by-default safety semantics we want from the CLI:
+
+- pass `default_projects: string[]` for a scoped key
+- use `unscoped: true` only when you deliberately want no default namespace
+- do **not** use `[]` / `"*"` / omitted scope as an unscoped proxy
+
+The full request / response contract lives in [`api.md`](api.md#admin-key-management). This document only covers how agents should use already-issued keys during real work.
+
 ## How Team Memory Measures Reuse
 
 Every interaction with a knowledge item is recorded so we can tell whether the system is actually saving work. The model has **four first-class tracked interactions** — learn these names, they show up in tool descriptions, reports, and the dashboard.

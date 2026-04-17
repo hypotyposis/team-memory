@@ -1,8 +1,16 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { v4 as uuidv4 } from "uuid";
-import { getOptionalApiAuth, requireApiAuth, requireOwnerAccess } from "./auth.js";
+import { getOptionalApiAuth, requireAdminAuth, requireApiAuth, requireOwnerAccess } from "./auth.js";
 import type { ApiAuth } from "./auth.js";
+import {
+  createApiKey,
+  listApiKeys,
+  normalizeProjectList,
+  revokeApiKeyById,
+  updateApiKeyById,
+} from "./api-keys.js";
+import type { ApiKeyRecord } from "./api-keys.js";
 import { getDb } from "./db.js";
 import { findPersistedDuplicateOf } from "./duplicates.js";
 import { embedKnowledgeItem, embedTexts } from "./embedding.js";
@@ -350,6 +358,118 @@ function jsonTaskError(
   return c.json({ error, code }, status);
 }
 
+function jsonAdminKeyError(
+  c: Context,
+  status: 400 | 404,
+  error: string,
+  code: string,
+): Response {
+  return c.json({ error, code }, status);
+}
+
+function hasOwn(body: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(body, key);
+}
+
+function serializeAdminKey(record: ApiKeyRecord, includeSecret = false) {
+  const payload = {
+    id: record.id,
+    owner: record.owner,
+    default_projects: record.default_projects,
+    unscoped: record.default_projects === null,
+    description: record.description,
+    created_at: record.created_at,
+    expires_at: record.expires_at,
+    last_used_at: record.last_used_at,
+    revoked_at: record.revoked_at,
+  };
+
+  return includeSecret
+    ? { ...payload, key: record.key }
+    : payload;
+}
+
+function normalizeAdminOwner(c: Context, value: unknown): string | Response {
+  if (value === undefined || value === null) {
+    return jsonAdminKeyError(c, 400, "owner is required", "admin_owner_required");
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return jsonAdminKeyError(c, 400, "owner must be a non-empty string", "admin_owner_invalid");
+  }
+  return value.trim();
+}
+
+function normalizeAdminDescription(c: Context, value: unknown): string | null | Response {
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    return jsonAdminKeyError(c, 400, "description must be a string when provided", "admin_description_invalid");
+  }
+  const normalized = value.trim();
+  return normalized === "" ? null : normalized;
+}
+
+function normalizeAdminExpiresAt(c: Context, value: unknown): string | null | Response {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.trim() === "") {
+    return jsonAdminKeyError(c, 400, "expires_at must be an ISO-8601 string when provided", "admin_expires_at_invalid");
+  }
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return jsonAdminKeyError(c, 400, "expires_at must be an ISO-8601 string when provided", "admin_expires_at_invalid");
+  }
+
+  return new Date(parsed).toISOString();
+}
+
+function normalizeAdminProjects(c: Context, value: unknown): string[] | Response {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
+    return jsonAdminKeyError(c, 400, "default_projects must be a non-empty array of non-empty strings", "admin_default_projects_invalid");
+  }
+
+  const normalized = normalizeProjectList(value);
+  if (!normalized || normalized.includes("*")) {
+    return jsonAdminKeyError(c, 400, "default_projects must be a non-empty array of non-empty strings", "admin_default_projects_invalid");
+  }
+
+  return normalized;
+}
+
+function normalizeAdminScopeInput(
+  c: Context,
+  body: Record<string, unknown>,
+  options: { requireScope: boolean },
+): { hasScopeChange: boolean; defaultProjects?: string[] | null } | Response {
+  const hasProjects = hasOwn(body, "default_projects");
+  const hasUnscoped = hasOwn(body, "unscoped");
+
+  if (!hasProjects && !hasUnscoped) {
+    if (options.requireScope) {
+      return jsonAdminKeyError(c, 400, "default_projects is required unless unscoped is true", "admin_default_projects_required");
+    }
+    return { hasScopeChange: false };
+  }
+
+  const unscoped = body.unscoped;
+  if (hasUnscoped && typeof unscoped !== "boolean") {
+    return jsonAdminKeyError(c, 400, "unscoped must be a boolean when provided", "admin_unscoped_invalid");
+  }
+  if (unscoped === true && hasProjects) {
+    return jsonAdminKeyError(c, 400, "default_projects cannot be combined with unscoped=true", "admin_scope_conflict");
+  }
+  if (unscoped === true) {
+    return { hasScopeChange: true, defaultProjects: null };
+  }
+  if (!hasProjects) {
+    return jsonAdminKeyError(c, 400, "default_projects is required unless unscoped is true", "admin_default_projects_required");
+  }
+
+  const defaultProjects = normalizeAdminProjects(c, body.default_projects);
+  if (defaultProjects instanceof Response) return defaultProjects;
+
+  return { hasScopeChange: true, defaultProjects };
+}
+
 function resolveScopedProjects(explicitProject: string | undefined, auth: ApiAuth | null): string[] | null {
   if (explicitProject === "*") return null;
   if (explicitProject !== undefined) return [explicitProject];
@@ -596,6 +716,99 @@ function recordViewEvent(
     ) VALUES (?, ?, 'view', NULL, ?, NULL, NULL, ?, NULL, ?)`,
   ).run(knowledgeId, owner, taskId, project, queryContext);
 }
+
+// 0. Admin key management
+api.post("/admin/keys", async (c) => {
+  const adminAuth = requireAdminAuth(c);
+  if (adminAuth instanceof Response) return adminAuth;
+
+  const body = await c.req.json() as Record<string, unknown>;
+  const owner = normalizeAdminOwner(c, body.owner);
+  if (owner instanceof Response) return owner;
+
+  const scope = normalizeAdminScopeInput(c, body, { requireScope: true });
+  if (scope instanceof Response) return scope;
+
+  const description = hasOwn(body, "description")
+    ? normalizeAdminDescription(c, body.description)
+    : null;
+  if (description instanceof Response) return description;
+
+  const expiresAt = hasOwn(body, "expires_at")
+    ? normalizeAdminExpiresAt(c, body.expires_at)
+    : null;
+  if (expiresAt instanceof Response) return expiresAt;
+
+  const record = createApiKey(getDb(), {
+    owner,
+    defaultProjects: scope.defaultProjects ?? null,
+    description,
+    expiresAt,
+  });
+
+  return c.json(serializeAdminKey(record, true), 201);
+});
+
+api.get("/admin/keys", (c) => {
+  const adminAuth = requireAdminAuth(c);
+  if (adminAuth instanceof Response) return adminAuth;
+
+  return c.json({
+    items: listApiKeys(getDb()).map((record) => serializeAdminKey(record)),
+  });
+});
+
+api.patch("/admin/keys/:id", async (c) => {
+  const adminAuth = requireAdminAuth(c);
+  if (adminAuth instanceof Response) return adminAuth;
+
+  const body = await c.req.json() as Record<string, unknown>;
+  const hasDescription = hasOwn(body, "description");
+  const hasExpiresAt = hasOwn(body, "expires_at");
+  const scope = normalizeAdminScopeInput(c, body, { requireScope: false });
+  if (scope instanceof Response) return scope;
+
+  if (!scope.hasScopeChange && !hasDescription && !hasExpiresAt) {
+    return jsonAdminKeyError(c, 400, "Provide at least one updatable field", "admin_update_empty");
+  }
+
+  let description: string | null | undefined;
+  if (hasDescription) {
+    const normalizedDescription = normalizeAdminDescription(c, body.description);
+    if (normalizedDescription instanceof Response) return normalizedDescription;
+    description = normalizedDescription;
+  }
+
+  let expiresAt: string | null | undefined;
+  if (hasExpiresAt) {
+    const normalizedExpiresAt = normalizeAdminExpiresAt(c, body.expires_at);
+    if (normalizedExpiresAt instanceof Response) return normalizedExpiresAt;
+    expiresAt = normalizedExpiresAt;
+  }
+
+  const updated = updateApiKeyById(getDb(), c.req.param("id"), {
+    ...(scope.hasScopeChange ? { defaultProjects: scope.defaultProjects ?? null } : {}),
+    ...(hasDescription ? { description } : {}),
+    ...(hasExpiresAt ? { expiresAt } : {}),
+  });
+
+  if (!updated) {
+    return jsonAdminKeyError(c, 404, "Admin key not found", "admin_key_not_found");
+  }
+
+  return c.json(serializeAdminKey(updated));
+});
+
+api.delete("/admin/keys/:id", (c) => {
+  const adminAuth = requireAdminAuth(c);
+  if (adminAuth instanceof Response) return adminAuth;
+
+  if (!revokeApiKeyById(getDb(), c.req.param("id"))) {
+    return jsonAdminKeyError(c, 404, "Admin key not found", "admin_key_not_found");
+  }
+
+  return new Response(null, { status: 204 });
+});
 
 // 1. POST /api/knowledge
 api.post("/knowledge", async (c) => {

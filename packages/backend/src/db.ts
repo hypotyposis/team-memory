@@ -182,15 +182,21 @@ export function getDb(): Database.Database {
     END;
 
     CREATE TABLE IF NOT EXISTS api_keys (
+      id          TEXT UNIQUE,
       key         TEXT PRIMARY KEY,
       owner       TEXT NOT NULL,
       default_projects TEXT,
+      description TEXT,
+      expires_at  TEXT,
+      last_used_at TEXT,
       created_at  TEXT NOT NULL,
       revoked_at  TEXT
     );
 
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);
 
     CREATE TABLE IF NOT EXISTS tasks (
       task_id      TEXT PRIMARY KEY,
@@ -236,7 +242,14 @@ export function getDb(): Database.Database {
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
   ensureColumn(_db, "knowledge", "embedding", "BLOB");
+  ensureColumn(_db, "api_keys", "id", "TEXT");
   ensureColumn(_db, "api_keys", "default_projects", "TEXT");
+  ensureColumn(_db, "api_keys", "description", "TEXT");
+  ensureColumn(_db, "api_keys", "expires_at", "TEXT");
+  ensureColumn(_db, "api_keys", "last_used_at", "TEXT");
+  _db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id)");
+  _db.exec("CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at)");
+  _db.exec("UPDATE api_keys SET id = 'key_' || printf('%016x', rowid) WHERE id IS NULL OR id = ''");
   ensureColumn(_db, "reuse_feedback", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_reuse_feedback_task_id ON reuse_feedback(task_id)");
   cleanupFalsePositiveDuplicateOf(_db);

@@ -17,7 +17,7 @@ For recommended agent workflows (when to publish, when to call `reuse_feedback`,
 
 ## Authentication
 
-The backend uses a simple Bearer token model. Tokens are minted with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner> --projects alpha,beta`) and identify an owner plus an explicit scope posture: either a default-project namespace (`default_projects`: a non-empty `string[]`) when minted with `--projects <names>`, or no project restriction (`default_projects` is `null`) when minted with `--unscoped`. The `create` and `update-key` subcommands require one of those two flags; there is no silent default.
+The backend uses a simple Bearer token model. Agent keys are minted either with the admin CLI (`npm run keys --workspace=packages/backend -- create <owner> (--projects alpha,beta | --unscoped)`) or programmatically via `POST /api/admin/keys` when `TEAM_MEMORY_ADMIN_KEY` is enabled. Each key identifies an owner plus an explicit scope posture: either a default-project namespace (`default_projects`: a non-empty `string[]`) when minted with `--projects <names>` / `default_projects`, or no project restriction (`default_projects` is `null`) when minted with `--unscoped` / `unscoped: true`. The CLI `create` and `update-key` subcommands require one of those two scope flags; there is no silent default.
 
 Three auth postures show up below:
 
@@ -34,6 +34,159 @@ Header format:
 ```
 Authorization: Bearer <api_key>
 ```
+
+---
+
+## Admin key management
+
+The `/api/admin/*` surface is a framework-neutral provisioning primitive for orchestrators, launchers, and CI that need to mint or revoke Team Memory API keys without shelling into the backend host.
+
+Admin routes are **dark by default**:
+
+- If `TEAM_MEMORY_ADMIN_KEY` is unset, all `/api/admin/*` routes return `404`.
+- If the admin bearer token is missing or wrong, all `/api/admin/*` routes also return `404`.
+- This is intentional: the admin surface does not advertise its existence to unauthenticated probing.
+
+Admin header format:
+
+```http
+Authorization: Bearer <TEAM_MEMORY_ADMIN_KEY>
+```
+
+### `POST /api/admin/keys`
+
+Mint a new API key. **Admin auth required.**
+
+**Request body**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `owner` | string | yes | Non-empty string. Becomes the owner attached to writes and observability rows. |
+| `default_projects` | string[] | conditional | Required unless `unscoped` is `true`. Must be a non-empty array of non-empty strings. `[]` and `["*"]` are invalid — use `unscoped: true` for an explicit opt-out. |
+| `unscoped` | boolean | conditional | Must be `true` when you want no default-project restriction. Cannot be combined with `default_projects`. |
+| `description` | string | no | Optional operator note. Blank strings normalize to `null`. |
+| `expires_at` | string | no | Optional ISO-8601 timestamp. Past timestamps are accepted; the key simply expires immediately. |
+
+**Scoped request example**
+
+```json
+{
+  "owner": "release-bot",
+  "default_projects": ["hackathon"],
+  "description": "pilot key for release automation",
+  "expires_at": "2026-04-24T23:59:59Z"
+}
+```
+
+**Explicit unscoped request example**
+
+```json
+{
+  "owner": "release-bot",
+  "unscoped": true,
+  "description": "cross-project break-glass key"
+}
+```
+
+**Response — 201**
+
+```json
+{
+  "id": "key_abc123",
+  "key": "tm_xxxxxxxxxxxxxxxxxxxxxxxx",
+  "owner": "release-bot",
+  "default_projects": ["hackathon"],
+  "unscoped": false,
+  "description": "pilot key for release automation",
+  "created_at": "2026-04-17T19:00:00.000Z",
+  "expires_at": "2026-04-24T23:59:59.000Z",
+  "last_used_at": null,
+  "revoked_at": null
+}
+```
+
+`key` is returned **once** at creation time. Later list/update endpoints never echo the secret back.
+
+**Errors**
+
+| Status | Code / shape | Condition |
+|---|---|---|
+| 400 | `admin_owner_required` | `owner` omitted |
+| 400 | `admin_owner_invalid` | `owner` not a non-empty string |
+| 400 | `admin_default_projects_required` | neither `default_projects` nor `unscoped: true` provided |
+| 400 | `admin_default_projects_invalid` | `default_projects` is not a non-empty string array |
+| 400 | `admin_unscoped_invalid` | `unscoped` provided but not boolean |
+| 400 | `admin_scope_conflict` | `default_projects` combined with `unscoped: true` |
+| 400 | `admin_description_invalid` | `description` provided but not string/null |
+| 400 | `admin_expires_at_invalid` | `expires_at` provided but not ISO-8601 |
+| 404 | `{ "error": "Not found" }` | `TEAM_MEMORY_ADMIN_KEY` unset, missing admin bearer, or wrong admin bearer |
+
+### `GET /api/admin/keys`
+
+List minted API keys. **Admin auth required.**
+
+**Response — 200**
+
+```json
+{
+  "items": [
+    {
+      "id": "key_abc123",
+      "owner": "release-bot",
+      "default_projects": ["hackathon"],
+      "unscoped": false,
+      "description": "pilot key for release automation",
+      "created_at": "2026-04-17T19:00:00.000Z",
+      "expires_at": "2026-04-24T23:59:59.000Z",
+      "last_used_at": "2026-04-17T19:10:00.000Z",
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+The secret `key` field is intentionally omitted.
+
+### `PATCH /api/admin/keys/:id`
+
+Update a key's scope metadata. **Admin auth required.**
+
+**Request body**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `default_projects` | string[] | conditional | Same validation as `POST`. |
+| `unscoped` | boolean | conditional | Same validation as `POST`. |
+| `description` | string or `null` | no | Set to `null` to clear. |
+| `expires_at` | string or `null` | no | Set to `null` to clear. |
+
+At least one field must be provided. Scope updates use the same contract as `POST`: either a non-empty `default_projects` array or explicit `unscoped: true`.
+
+**Response — 200** — same shape as a `GET` list item.
+
+**Errors**
+
+| Status | Code / shape | Condition |
+|---|---|---|
+| 400 | `admin_update_empty` | No updatable fields provided |
+| 400 | `admin_*` validation codes above | Invalid scope / description / expiry fields |
+| 404 | `admin_key_not_found` | Unknown key id or already revoked |
+| 404 | `{ "error": "Not found" }` | Admin auth disabled or wrong admin bearer |
+
+### `DELETE /api/admin/keys/:id`
+
+Revoke a key. **Admin auth required.**
+
+**Response — 204**
+
+No body.
+
+**Errors**
+
+| Status | Code / shape | Condition |
+|---|---|---|
+| 404 | `admin_key_not_found` | Unknown key id or already revoked |
+| 404 | `{ "error": "Not found" }` | Admin auth disabled or wrong admin bearer |
 
 ---
 
@@ -421,12 +574,22 @@ Team-wide reuse snapshot. No auth.
 
 ## Error code catalog
 
-Task-session and task-trace endpoints return `{ error, code }` with a stable `code`. The full set:
+Task-session, task-trace, and admin-key endpoints return `{ error, code }` with a stable `code`. The full set:
 
 | Code | Status | Surface |
 |---|---|---|
 | `auth_missing` | 401 | Any auth-required endpoint (`PATCH /knowledge/:id`, `POST /knowledge/:id/feedback`, `POST /tasks/start`, `POST /tasks/:id/end`) or any optional-auth endpoint with `task_id` passthrough when the caller omits the Authorization header |
 | `auth_invalid` | 401 | Same surfaces — Authorization header present, but the bearer token does not match an active API key |
+| `admin_owner_required` | 400 | `POST /admin/keys` |
+| `admin_owner_invalid` | 400 | `POST /admin/keys` |
+| `admin_default_projects_required` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_default_projects_invalid` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_unscoped_invalid` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_scope_conflict` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_description_invalid` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_expires_at_invalid` | 400 | `POST /admin/keys`, `PATCH /admin/keys/:id` |
+| `admin_update_empty` | 400 | `PATCH /admin/keys/:id` |
+| `admin_key_not_found` | 404 | `PATCH /admin/keys/:id`, `DELETE /admin/keys/:id` |
 | `task_description_required` | 400 | `POST /tasks/start` |
 | `task_description_invalid` | 400 | `POST /tasks/start` |
 | `task_project_invalid` | 400 | `POST /tasks/start` |
@@ -438,7 +601,7 @@ Task-session and task-trace endpoints return `{ error, code }` with a stable `co
 | `task_already_closed` | 409 | `POST /tasks/:id/end` |
 | `task_publish_failed` | 400 | `POST /tasks/:id/end` (partial-publish body) |
 
-Legacy endpoints (`/knowledge/*` without task-session semantics) return `{ error }` without a `code`. New error surfaces added after A1 should follow the `{ error, code }` pattern.
+Legacy endpoints (`/knowledge/*` without task-session semantics) return `{ error }` without a `code`. The admin-auth dark surface intentionally returns bare `404` (no `code`) when `TEAM_MEMORY_ADMIN_KEY` is unset or the admin bearer is missing/wrong; once a caller is on the authenticated admin path, validation and lookup failures use `{ error, code }`.
 
 ---
 

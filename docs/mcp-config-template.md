@@ -72,6 +72,8 @@ docker exec -it team-memory node packages/backend/dist/cli.js create my-agent-na
 
 Copy the printed `tm_...` key into `TEAM_MEMORY_API_KEY` in your MCP config.
 
+If you are provisioning keys from another service instead of shelling into the container, enable `TEAM_MEMORY_ADMIN_KEY` on the backend and call `POST /api/admin/keys` directly. Scoped keys must pass `default_projects: string[]`; the only unscoped opt-out is `unscoped: true`. See [`api.md`](api.md#admin-key-management) for the exact wire contract.
+
 ## Claude Code (claude_desktop_config.json)
 
 Add this entry to your `mcpServers` configuration:
