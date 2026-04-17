@@ -76,6 +76,22 @@ export interface UpdateInput {
   confidence?: "high" | "medium" | "low";
 }
 
+export type ReuseVerdict = "useful" | "not_useful" | "outdated";
+
+export interface ReuseFeedbackInput {
+  knowledge_id: string;
+  verdict: ReuseVerdict;
+  comment?: string;
+}
+
+export interface ReuseFeedback {
+  knowledge_id: string;
+  owner: string;
+  verdict: ReuseVerdict;
+  comment: string | null;
+  created_at: string;
+}
+
 export class ApiClient {
   private baseUrl: string;
   private apiKey?: string;
@@ -85,12 +101,12 @@ export class ApiClient {
     this.apiKey = apiKey;
   }
 
+  private authHeaders(): Record<string, string> {
+    return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+  }
+
   private writeHeaders(): Record<string, string> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
-    }
-    return headers;
+    return { "Content-Type": "application/json", ...this.authHeaders() };
   }
 
   async publish(input: PublishInput): Promise<KnowledgeItem> {
@@ -115,7 +131,8 @@ export class ApiClient {
     if (input.limit) params.set("limit", String(input.limit));
 
     const res = await fetch(
-      `${this.baseUrl}/api/knowledge/search?${params.toString()}`
+      `${this.baseUrl}/api/knowledge/search?${params.toString()}`,
+      { headers: this.authHeaders() }
     );
     if (!res.ok) {
       const text = await res.text();
@@ -132,7 +149,8 @@ export class ApiClient {
     if (input.limit) params.set("limit", String(input.limit));
 
     const res = await fetch(
-      `${this.baseUrl}/api/knowledge?${params.toString()}`
+      `${this.baseUrl}/api/knowledge?${params.toString()}`,
+      { headers: this.authHeaders() }
     );
     if (!res.ok) {
       const text = await res.text();
@@ -142,13 +160,35 @@ export class ApiClient {
     return data.items;
   }
 
-  async get(id: string): Promise<KnowledgeItem> {
-    const res = await fetch(`${this.baseUrl}/api/knowledge/${id}`);
+  async get(id: string, queryContext?: string): Promise<KnowledgeItem> {
+    const params = new URLSearchParams();
+    if (queryContext) params.set("query_context", queryContext);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const res = await fetch(`${this.baseUrl}/api/knowledge/${id}${suffix}`, {
+      headers: this.authHeaders(),
+    });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`get failed (${res.status}): ${text}`);
     }
     return res.json() as Promise<KnowledgeItem>;
+  }
+
+  async reuseFeedback(input: ReuseFeedbackInput): Promise<ReuseFeedback> {
+    const { knowledge_id, ...body } = input;
+    const res = await fetch(
+      `${this.baseUrl}/api/knowledge/${knowledge_id}/feedback`,
+      {
+        method: "POST",
+        headers: this.writeHeaders(),
+        body: JSON.stringify(body),
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`reuse feedback failed (${res.status}): ${text}`);
+    }
+    return res.json() as Promise<ReuseFeedback>;
   }
 
   async semanticSearch(input: SemanticSearchInput): Promise<KnowledgeSummary[]> {
@@ -158,7 +198,8 @@ export class ApiClient {
     if (input.limit) params.set("limit", String(input.limit));
 
     const res = await fetch(
-      `${this.baseUrl}/api/knowledge/semantic-search?${params.toString()}`
+      `${this.baseUrl}/api/knowledge/semantic-search?${params.toString()}`,
+      { headers: this.authHeaders() }
     );
     if (!res.ok) {
       const text = await res.text();

@@ -127,13 +127,14 @@ server.tool(
 // --- Tool 5: get_knowledge ---
 server.tool(
   "get_knowledge",
-  "Get the full content of a single knowledge item by ID. Use this after query/list to read the complete detail.",
+  "Get the full content of a single knowledge item by ID. Use this after query/list to read the complete detail. Opening an item records a 'view' event for reuse tracking — pass query_context to tag what task or question prompted the view.",
   {
     id: z.string().describe("The knowledge item UUID"),
+    query_context: z.string().optional().describe("What task or question prompted this view (optional). Gets attached to the view event so reports can show why each item was opened."),
   },
   async (args) => {
     try {
-      const item = await client.get(args.id);
+      const item = await client.get(args.id, args.query_context);
       const parts = [
         `**${item.claim}**`, "",
         item.detail ?? "(no detail)", "",
@@ -157,7 +158,31 @@ server.tool(
   }
 );
 
-// --- Tool 6: update_knowledge ---
+// --- Tool 6: reuse_feedback ---
+server.tool(
+  "reuse_feedback",
+  "Report whether a knowledge item was actually useful after using it. Call this after get_knowledge once you know whether the content helped. Verdict: 'useful' (it answered my question or saved work), 'not_useful' (irrelevant or wrong), 'outdated' (used to be true but no longer applies). This feeds the team's reuse metrics.",
+  {
+    knowledge_id: z.string().describe("The knowledge item UUID you are giving feedback on"),
+    verdict: z.enum(["useful", "not_useful", "outdated"]).describe("useful = it helped / saved me work; not_useful = irrelevant or wrong; outdated = used to be true but no longer applies"),
+    comment: z.string().optional().describe("Optional one-line note (e.g. what was wrong, or how you used it)"),
+  },
+  async (args) => {
+    try {
+      const feedback = await client.reuseFeedback(args);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Feedback recorded.\n\nKnowledge ID: ${feedback.knowledge_id}\nVerdict: ${feedback.verdict}${feedback.comment ? `\nComment: ${feedback.comment}` : ""}\nRecorded by: ${feedback.owner}\nAt: ${feedback.created_at}`,
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: `Error: ${err}` }], isError: true };
+    }
+  }
+);
+
+// --- Tool 7: update_knowledge ---
 server.tool(
   "update_knowledge",
   "Update metadata of an existing knowledge item. Only tags, staleness_hint, related_to, and confidence can be changed. To change the claim itself, publish a new item with supersedes.",
