@@ -49,7 +49,7 @@ server.tool(
 // --- Tool 2: query_knowledge ---
 server.tool(
   "query_knowledge",
-  "Search the team knowledge base by keywords. Use this before starting a task to check what the team already knows about a topic.",
+  "Search the team knowledge base by keywords (FTS, with optional semantic rerank). Use this before starting a task to check what the team already knows about a topic. Each authenticated call records a first-class `query` event (query_text, result_count, project, search_mode) and shares a request_id with any `exposure` events written for the returned items — 0-hit searches are still recorded so 'nobody knew about X' shows up in the reuse report.",
   {
     query: z.string().describe("Search keywords"),
     tags: z.array(z.string()).optional().describe("Filter by tags (optional)"),
@@ -76,7 +76,7 @@ server.tool(
 // --- Tool 3: semantic_search ---
 server.tool(
   "semantic_search",
-  "Search the team knowledge base using semantic similarity (vector search). Use this when keyword search misses relevant results — it finds conceptually related knowledge even if the exact words differ.",
+  "Search the team knowledge base using semantic similarity (vector search). Use this when keyword search misses relevant results — it finds conceptually related knowledge even if the exact words differ. Like query_knowledge, each authenticated call records a first-class `query` event (search_mode='semantic') that shares a request_id with the resulting `exposure` rows; even failed embeddings log a query row with result_count=0 so the attempt stays observable.",
   {
     query: z.string().describe("Natural language query describing what you're looking for"),
     project: z.string().optional().describe("Filter by project (optional)"),
@@ -127,10 +127,10 @@ server.tool(
 // --- Tool 5: get_knowledge ---
 server.tool(
   "get_knowledge",
-  "Get the full content of a single knowledge item by ID. Use this after query/list to read the complete detail. Opening an item records a 'view' event for reuse tracking — pass query_context to tag what task or question prompted the view.",
+  "Get the full content of a single knowledge item by ID. Use this after query_knowledge or semantic_search to read the complete detail — opening an item records a first-class `view` event for reuse tracking. Always pass `query_context` with the task or question that prompted the view so the view row ties back to the original query intent; this is how the reuse report attributes views to the search that triggered them.",
   {
     id: z.string().describe("The knowledge item UUID"),
-    query_context: z.string().optional().describe("What task or question prompted this view (optional). Gets attached to the view event so reports can show why each item was opened."),
+    query_context: z.string().optional().describe("What task or question prompted this view. Strongly recommended when the view follows a query_knowledge or semantic_search call — pass the same question text so reports can tie the view back to the original search intent."),
   },
   async (args) => {
     try {
@@ -161,7 +161,7 @@ server.tool(
 // --- Tool 6: reuse_feedback ---
 server.tool(
   "reuse_feedback",
-  "Report whether a knowledge item was actually useful after using it. Call this after get_knowledge once you know whether the content helped. Verdict: 'useful' (it answered my question or saved work), 'not_useful' (irrelevant or wrong), 'outdated' (used to be true but no longer applies). This feeds the team's reuse metrics.",
+  "Report whether a knowledge item was actually useful after using it. Call this after get_knowledge once you know whether the content helped. Verdict: 'useful' (it answered my question or saved work), 'not_useful' (irrelevant or wrong), 'outdated' (used to be true but no longer applies). Feedback is stored as an independent first-class record (separate from view events); each call inserts a new row. The reuse report computes `feedback_coverage` at aggregation time by deduplicating to distinct (owner, knowledge_id) pairs — so the metric measures 'of viewed (owner, item) pairs, how many carry any feedback' and stays bounded at 1.0 even if you submit feedback on the same item multiple times.",
   {
     knowledge_id: z.string().describe("The knowledge item UUID you are giving feedback on"),
     verdict: z.enum(["useful", "not_useful", "outdated"]).describe("useful = it helped / saved me work; not_useful = irrelevant or wrong; outdated = used to be true but no longer applies"),
