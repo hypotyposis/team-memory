@@ -42,6 +42,7 @@ function createUsageEventsTable(db: Database.Database): void {
       owner         TEXT NOT NULL,
       event_type    TEXT NOT NULL CHECK (event_type IN ('query', 'exposure', 'view')),
       request_id    TEXT,
+      task_id       TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
       query_text    TEXT,
       result_count  INTEGER,
       project       TEXT NOT NULL DEFAULT '',
@@ -103,7 +104,7 @@ function ensureUsageEventsSchema(db: Database.Database): void {
 
   db.exec(`
     INSERT INTO usage_events (
-      id, knowledge_id, owner, event_type, request_id,
+      id, knowledge_id, owner, event_type, request_id, task_id,
       query_text, result_count, project, search_mode, query_context, created_at
     )
     SELECT
@@ -112,6 +113,7 @@ function ensureUsageEventsSchema(db: Database.Database): void {
       legacy.owner,
       legacy.event_type,
       legacy.request_id,
+      NULL,
       NULL,
       NULL,
       COALESCE(knowledge.project, ''),
@@ -189,24 +191,52 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
 
+    CREATE TABLE IF NOT EXISTS tasks (
+      task_id      TEXT PRIMARY KEY,
+      owner        TEXT NOT NULL,
+      project      TEXT,
+      description  TEXT NOT NULL,
+      status       TEXT NOT NULL CHECK (status IN ('open', 'completed', 'abandoned')) DEFAULT 'open',
+      opened_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      closed_at    TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_owner_status ON tasks(owner, status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(project, status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_opened_at ON tasks(opened_at);
+
     CREATE TABLE IF NOT EXISTS reuse_feedback (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
       owner         TEXT NOT NULL,
       verdict       TEXT NOT NULL CHECK (verdict IN ('useful', 'not_useful', 'outdated')),
       comment       TEXT,
+      task_id       TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_reuse_feedback_knowledge ON reuse_feedback(knowledge_id);
     CREATE INDEX IF NOT EXISTS idx_reuse_feedback_owner ON reuse_feedback(owner);
     CREATE INDEX IF NOT EXISTS idx_reuse_feedback_created ON reuse_feedback(created_at);
+
+    CREATE TABLE IF NOT EXISTS task_publications (
+      task_id       TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+      knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (task_id, knowledge_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_publications_knowledge_id ON task_publications(knowledge_id);
   `);
 
   ensureUsageEventsSchema(_db);
+  ensureColumn(_db, "usage_events", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
+  _db.exec("CREATE INDEX IF NOT EXISTS idx_usage_events_task_id ON usage_events(task_id)");
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
   ensureColumn(_db, "knowledge", "embedding", "BLOB");
+  ensureColumn(_db, "reuse_feedback", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
+  _db.exec("CREATE INDEX IF NOT EXISTS idx_reuse_feedback_task_id ON reuse_feedback(task_id)");
   cleanupFalsePositiveDuplicateOf(_db);
 
   return _db;
