@@ -644,23 +644,29 @@ api.get("/reports/reuse", (c) => {
   }
 
   const totalItems = knowledgeRows.length;
+  const baseNeverAccessed = knowledgeRows.filter((row) => {
+    const item = stats.get(row.id);
+    if (!item) return false;
+    return (
+      item.exposure_count === 0
+      && item.view_count === 0
+      && item.useful_feedback_count === 0
+      && item.not_useful_feedback_count === 0
+      && item.outdated_feedback_count === 0
+    );
+  });
+
   const minCreatedAtTimestamp = minAgeDays === null
     ? null
     : Date.now() - minAgeDays * 24 * 60 * 60 * 1000;
-  const neverAccessed = knowledgeRows
+  const neverAccessed = baseNeverAccessed
     .filter((row) => {
       if (minCreatedAtTimestamp !== null && timestampFromDb(row.created_at) > minCreatedAtTimestamp) {
         return false;
       }
       const item = stats.get(row.id);
       if (!item) return false;
-      return (
-        item.exposure_count === 0
-        && item.view_count === 0
-        && item.useful_feedback_count === 0
-        && item.not_useful_feedback_count === 0
-        && item.outdated_feedback_count === 0
-      );
+      return true;
     })
     .map((row) => ({ id: row.id, claim: row.claim }));
 
@@ -737,7 +743,7 @@ api.get("/reports/reuse", (c) => {
     .slice(0, 10)
     .map(({ reuse_score: _reuseScore, ...item }) => item);
 
-  const neverAccessedPct = totalItems === 0 ? 0 : neverAccessed.length / totalItems;
+  const neverAccessedPct = totalItems === 0 ? 0 : baseNeverAccessed.length / totalItems;
   const northStarPct = totalItems === 0 ? 0 : northStarCount / totalItems;
   const hitRate = totalQueries === 0 ? 0 : queriesWithResult / totalQueries;
   const coveredPairs = Array.from(viewedPairs).filter((pairKey) => feedbackPairs.has(pairKey)).length;

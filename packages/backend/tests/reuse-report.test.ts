@@ -544,7 +544,7 @@ test("reuse report applies min_age_days only to never_accessed", async () => {
   const body = (await response.json()) as ReuseReportResponse;
 
   assert.equal(body.total_items, 2);
-  assert.equal(body.never_accessed_pct, 0.5);
+  assert.equal(body.never_accessed_pct, 1);
   assert.deepEqual(body.never_accessed, [
     { id: "old-never-accessed", claim: "Old untouched item." },
   ]);
