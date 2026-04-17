@@ -144,8 +144,10 @@ The backend key-management CLI uses the same env var, so point it at the same DB
 
 ```bash
 TEAM_MEMORY_DB=/absolute/path/to/team-memory.db \
-npm run keys --workspace=packages/backend -- create <owner>
+npm run keys --workspace=packages/backend -- create <owner> --projects alpha,beta
 ```
+
+The `create` and `update-key` subcommands require an explicit scope flag — pass `--projects <names>` to scope the key, or `--unscoped` to mint a key with no project restriction. Running without either flag fails loud rather than silently minting an unscoped key.
 
 ### 2. Start the MCP server
 
