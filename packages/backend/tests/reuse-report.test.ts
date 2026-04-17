@@ -29,9 +29,12 @@ interface TopReusedItem {
 
 interface ReuseReportResponse {
   total_queries: number;
+  hit_rate: number;
   total_views: number;
   total_items: number;
   never_accessed_pct: number;
+  north_star_count: number;
+  north_star_pct: number;
   north_star: number;
   top_reused: TopReusedItem[];
   never_accessed: NeverAccessedItem[];
@@ -79,21 +82,31 @@ function insertKnowledgeRow(
 function insertUsageEvent(
   db: Database.Database,
   input: {
-    knowledgeId: string;
+    knowledgeId?: string | null;
     owner: string;
-    eventType: "exposure" | "view";
+    eventType: "query" | "exposure" | "view";
     requestId?: string | null;
+    queryText?: string | null;
+    resultCount?: number | null;
+    project?: string;
+    searchMode?: "fts" | "semantic" | "hybrid" | null;
     queryContext?: string | null;
   },
 ): void {
   db.prepare(
-    `INSERT INTO usage_events (knowledge_id, owner, event_type, request_id, query_context)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO usage_events (
+      knowledge_id, owner, event_type, request_id, query_text,
+      result_count, project, search_mode, query_context
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    input.knowledgeId,
+    input.knowledgeId ?? null,
     input.owner,
     input.eventType,
     input.requestId ?? null,
+    input.queryText ?? null,
+    input.resultCount ?? null,
+    input.project ?? "team-memory",
+    input.searchMode ?? null,
     input.queryContext ?? null,
   );
 }
@@ -147,12 +160,24 @@ test("reuse report aggregates total queries, views, north-star, top reused, and 
   insertKnowledgeRow(db, { id: "item-b", claim: "Usage events are mirrored before persistence." });
   insertKnowledgeRow(db, { id: "item-c", claim: "Never accessed item C." });
   insertKnowledgeRow(db, { id: "item-d", claim: "Never accessed item D." });
+  insertKnowledgeRow(db, { id: "item-e", claim: "Exposure-only item E." });
 
+  insertUsageEvent(db, {
+    owner: "Alice",
+    eventType: "query",
+    requestId: "request-1",
+    queryText: "billing ownership",
+    resultCount: 2,
+    project: "team-memory",
+    searchMode: "hybrid",
+  });
   insertUsageEvent(db, {
     knowledgeId: "item-a",
     owner: "Alice",
     eventType: "exposure",
     requestId: "request-1",
+    project: "team-memory",
+    searchMode: "hybrid",
     queryContext: "billing ownership",
   });
   insertUsageEvent(db, {
@@ -160,32 +185,78 @@ test("reuse report aggregates total queries, views, north-star, top reused, and 
     owner: "Alice",
     eventType: "exposure",
     requestId: "request-1",
+    project: "team-memory",
+    searchMode: "hybrid",
     queryContext: "billing ownership",
+  });
+
+  insertUsageEvent(db, {
+    owner: "Bob",
+    eventType: "query",
+    requestId: "request-2",
+    queryText: "usage persistence",
+    resultCount: 1,
+    project: "team-memory",
+    searchMode: "hybrid",
   });
   insertUsageEvent(db, {
     knowledgeId: "item-a",
     owner: "Bob",
     eventType: "exposure",
     requestId: "request-2",
+    project: "team-memory",
+    searchMode: "hybrid",
     queryContext: "usage persistence",
+  });
+
+  insertUsageEvent(db, {
+    owner: "Dana",
+    eventType: "query",
+    requestId: "request-3",
+    queryText: "missing topic",
+    resultCount: 0,
+    project: "team-memory",
+    searchMode: "hybrid",
+  });
+
+  insertUsageEvent(db, {
+    owner: "Eve",
+    eventType: "query",
+    requestId: "request-4",
+    queryText: "exposure only",
+    resultCount: 1,
+    project: "team-memory",
+    searchMode: "hybrid",
+  });
+  insertUsageEvent(db, {
+    knowledgeId: "item-e",
+    owner: "Eve",
+    eventType: "exposure",
+    requestId: "request-4",
+    project: "team-memory",
+    searchMode: "hybrid",
+    queryContext: "exposure only",
   });
 
   insertUsageEvent(db, {
     knowledgeId: "item-a",
     owner: "Alice",
     eventType: "view",
+    project: "team-memory",
     queryContext: "billing ownership",
   });
   insertUsageEvent(db, {
     knowledgeId: "item-a",
     owner: "Bob",
     eventType: "view",
+    project: "team-memory",
     queryContext: "usage persistence",
   });
   insertUsageEvent(db, {
     knowledgeId: "item-b",
     owner: "Alice",
     eventType: "view",
+    project: "team-memory",
     queryContext: "billing ownership",
   });
 
@@ -211,11 +282,14 @@ test("reuse report aggregates total queries, views, north-star, top reused, and 
   assert.equal(response.status, 200);
   const body = (await response.json()) as ReuseReportResponse;
 
-  assert.equal(body.total_queries, 2);
+  assert.equal(body.total_queries, 4);
+  assert.equal(body.hit_rate, 3 / 4);
   assert.equal(body.total_views, 3);
-  assert.equal(body.total_items, 4);
-  assert.equal(body.never_accessed_pct, 0.5);
-  assert.equal(body.north_star, 0.25);
+  assert.equal(body.total_items, 5);
+  assert.equal(body.never_accessed_pct, 0.4);
+  assert.equal(body.north_star_count, 1);
+  assert.equal(body.north_star_pct, 0.2);
+  assert.equal(body.north_star, 0.2);
   assert.deepEqual(
     body.top_reused.map((item) => ({
       knowledge_id: item.knowledge_id,
@@ -260,9 +334,12 @@ test("reuse report returns zeroed metrics when there is no usage data", async ()
   const body = (await response.json()) as ReuseReportResponse;
 
   assert.equal(body.total_queries, 0);
+  assert.equal(body.hit_rate, 0);
   assert.equal(body.total_views, 0);
   assert.equal(body.total_items, 1);
   assert.equal(body.never_accessed_pct, 1);
+  assert.equal(body.north_star_count, 0);
+  assert.equal(body.north_star_pct, 0);
   assert.equal(body.north_star, 0);
   assert.deepEqual(body.top_reused, []);
   assert.deepEqual(body.never_accessed, [{ id: "lonely-item", claim: "This item has never been accessed." }]);

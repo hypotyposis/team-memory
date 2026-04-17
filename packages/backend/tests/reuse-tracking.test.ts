@@ -16,10 +16,14 @@ process.env.EMBEDDING_API_BASE = "https://openrouter.ai/api/v1";
 process.env.EMBEDDING_MODEL = "openai/text-embedding-3-small";
 
 interface UsageEventRow {
-  knowledge_id: string;
+  knowledge_id: string | null;
   owner: string;
   event_type: string;
   request_id: string | null;
+  query_text: string | null;
+  result_count: number | null;
+  project: string;
+  search_mode: string | null;
   query_context: string | null;
 }
 
@@ -121,14 +125,16 @@ test("authenticated FTS search writes exposure events with a shared request_id",
   insertKnowledgeRow(db, {
     id: "billing-row-a",
     claim: "Billing pipeline buffers usage events before persistence.",
+    project: "billing-core",
   });
   insertKnowledgeRow(db, {
     id: "billing-row-b",
     claim: "Billing ownership stays in the control plane.",
+    project: "billing-core",
   });
   const apiKey = createApiKey("Researcher");
 
-  const response = await app.request("http://localhost/api/knowledge/search?q=billing", {
+  const response = await app.request("http://localhost/api/knowledge/search?q=billing&project=billing-core", {
     headers: {
       authorization: `Bearer ${apiKey}`,
     },
@@ -137,24 +143,38 @@ test("authenticated FTS search writes exposure events with a shared request_id",
   assert.equal(response.status, 200);
 
   const events = getDb().prepare(
-    "SELECT knowledge_id, owner, event_type, request_id, query_context FROM usage_events ORDER BY knowledge_id ASC",
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count,
+            project, search_mode, query_context
+     FROM usage_events
+     ORDER BY id ASC`,
   ).all() as UsageEventRow[];
 
-  assert.equal(events.length, 2);
-  assert.deepEqual(events.map((event) => event.knowledge_id), ["billing-row-a", "billing-row-b"]);
-  assert.ok(events[0]!.request_id);
-  assert.equal(events[0]!.request_id, events[1]!.request_id);
+  assert.equal(events.length, 3);
+
+  const queryRow = events.find((event) => event.event_type === "query");
+  const exposureRows = events.filter((event) => event.event_type === "exposure");
+
+  assert.ok(queryRow);
+  assert.equal(queryRow!.knowledge_id, null);
+  assert.equal(queryRow!.owner, "Researcher");
+  assert.equal(queryRow!.query_text, "billing");
+  assert.equal(queryRow!.result_count, 2);
+  assert.equal(queryRow!.project, "billing-core");
+  assert.equal(queryRow!.search_mode, "hybrid");
+  assert.equal(queryRow!.query_context, null);
+
+  assert.equal(exposureRows.length, 2);
   assert.deepEqual(
-    events.map((event) => ({
-      owner: event.owner,
-      event_type: event.event_type,
-      query_context: event.query_context,
-    })),
-    [
-      { owner: "Researcher", event_type: "exposure", query_context: "billing" },
-      { owner: "Researcher", event_type: "exposure", query_context: "billing" },
-    ],
+    exposureRows.map((event) => event.knowledge_id).sort(),
+    ["billing-row-a", "billing-row-b"],
   );
+  assert.ok(queryRow!.request_id);
+  assert.ok(exposureRows.every((event) => event.request_id === queryRow!.request_id));
+  assert.ok(exposureRows.every((event) => event.project === "billing-core"));
+  assert.ok(exposureRows.every((event) => event.search_mode === "hybrid"));
+  assert.ok(exposureRows.every((event) => event.query_text === null));
+  assert.ok(exposureRows.every((event) => event.result_count === null));
+  assert.ok(exposureRows.every((event) => event.query_context === "billing"));
 });
 
 test("authenticated semantic search writes exposure events with query context", async () => {
@@ -185,15 +205,34 @@ test("authenticated semantic search writes exposure events with query context", 
   assert.equal(response.status, 200);
 
   const events = getDb().prepare(
-    "SELECT knowledge_id, owner, event_type, request_id, query_context FROM usage_events",
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count,
+            project, search_mode, query_context
+     FROM usage_events
+     ORDER BY id ASC`,
   ).all() as UsageEventRow[];
 
-  assert.equal(events.length, 1);
-  assert.equal(events[0]!.knowledge_id, "semantic-row");
-  assert.equal(events[0]!.owner, "SemanticUser");
-  assert.equal(events[0]!.event_type, "exposure");
-  assert.ok(events[0]!.request_id);
-  assert.equal(events[0]!.query_context, "usage mirroring");
+  assert.equal(events.length, 2);
+
+  const queryRow = events.find((event) => event.event_type === "query");
+  const exposureRow = events.find((event) => event.event_type === "exposure");
+
+  assert.ok(queryRow);
+  assert.ok(exposureRow);
+  assert.equal(queryRow!.knowledge_id, null);
+  assert.equal(queryRow!.owner, "SemanticUser");
+  assert.equal(queryRow!.query_text, "usage mirroring");
+  assert.equal(queryRow!.result_count, 1);
+  assert.equal(queryRow!.project, "");
+  assert.equal(queryRow!.search_mode, "semantic");
+  assert.ok(queryRow!.request_id);
+
+  assert.equal(exposureRow!.knowledge_id, "semantic-row");
+  assert.equal(exposureRow!.owner, "SemanticUser");
+  assert.equal(exposureRow!.event_type, "exposure");
+  assert.equal(exposureRow!.request_id, queryRow!.request_id);
+  assert.equal(exposureRow!.project, "team-memory");
+  assert.equal(exposureRow!.search_mode, "semantic");
+  assert.equal(exposureRow!.query_context, "usage mirroring");
 });
 
 test("authenticated get_knowledge writes a view event and stores query_context", async () => {
@@ -216,14 +255,49 @@ test("authenticated get_knowledge writes a view event and stores query_context",
   assert.equal(response.status, 200);
 
   const event = getDb().prepare(
-    "SELECT knowledge_id, owner, event_type, request_id, query_context FROM usage_events",
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count,
+            project, search_mode, query_context
+     FROM usage_events`,
   ).get() as UsageEventRow;
 
   assert.equal(event.knowledge_id, "view-row");
   assert.equal(event.owner, "Viewer");
   assert.equal(event.event_type, "view");
   assert.equal(event.request_id, null);
+  assert.equal(event.project, "team-memory");
+  assert.equal(event.query_text, null);
+  assert.equal(event.result_count, null);
+  assert.equal(event.search_mode, null);
   assert.equal(event.query_context, "task:billing-investigation");
+});
+
+test("authenticated 0-hit search still writes a query row with result_count 0", async () => {
+  const apiKey = createApiKey("NoHitUser");
+
+  const response = await app.request("http://localhost/api/knowledge/search?q=missingtopic&project=ghost-project", {
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+    },
+  });
+
+  assert.equal(response.status, 200);
+
+  const events = getDb().prepare(
+    `SELECT knowledge_id, owner, event_type, request_id, query_text, result_count,
+            project, search_mode, query_context
+     FROM usage_events`,
+  ).all() as UsageEventRow[];
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.event_type, "query");
+  assert.equal(events[0]!.knowledge_id, null);
+  assert.equal(events[0]!.owner, "NoHitUser");
+  assert.equal(events[0]!.query_text, "missingtopic");
+  assert.equal(events[0]!.result_count, 0);
+  assert.equal(events[0]!.project, "ghost-project");
+  assert.equal(events[0]!.search_mode, "hybrid");
+  assert.equal(events[0]!.query_context, null);
+  assert.ok(events[0]!.request_id);
 });
 
 test("authenticated feedback endpoint persists reuse feedback", async () => {

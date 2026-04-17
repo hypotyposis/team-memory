@@ -6,8 +6,18 @@ const DB_PATH = process.env.TEAM_MEMORY_DB ?? path.join(process.cwd(), "team-mem
 
 let _db: Database.Database | null = null;
 
+interface TableColumnInfo {
+  name: string;
+  notnull: number;
+}
+
+function tableInfo(db: Database.Database, table: string): TableColumnInfo[] {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+  return rows;
+}
+
 function hasColumn(db: Database.Database, table: string, column: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  const rows = tableInfo(db, table);
   return rows.some((row) => row.name === column);
 }
 
@@ -15,6 +25,105 @@ function ensureColumn(db: Database.Database, table: string, column: string, defi
   if (!hasColumn(db, table, column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function tableSql(db: Database.Database, table: string): string | null {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) as { sql: string | null } | undefined;
+  return row?.sql ?? null;
+}
+
+function createUsageEventsTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      knowledge_id  TEXT REFERENCES knowledge(id) ON DELETE CASCADE,
+      owner         TEXT NOT NULL,
+      event_type    TEXT NOT NULL CHECK (event_type IN ('query', 'exposure', 'view')),
+      request_id    TEXT,
+      query_text    TEXT,
+      result_count  INTEGER,
+      project       TEXT NOT NULL DEFAULT '',
+      search_mode   TEXT CHECK (search_mode IN ('fts', 'semantic', 'hybrid')),
+      query_context TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+}
+
+function createUsageEventsIndexes(db: Database.Database): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_usage_events_knowledge ON usage_events(knowledge_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_owner ON usage_events(owner);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_request ON usage_events(request_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_event_type ON usage_events(event_type);
+  `);
+}
+
+function ensureUsageEventsSchema(db: Database.Database): void {
+  createUsageEventsTable(db);
+
+  const columns = tableInfo(db, "usage_events");
+  if (columns.length === 0) {
+    createUsageEventsIndexes(db);
+    return;
+  }
+
+  const sql = tableSql(db, "usage_events")?.toLowerCase() ?? "";
+  const knowledgeId = columns.find((column) => column.name === "knowledge_id");
+  const project = columns.find((column) => column.name === "project");
+  const needsMigration =
+    !hasColumn(db, "usage_events", "query_text")
+    || !hasColumn(db, "usage_events", "result_count")
+    || !hasColumn(db, "usage_events", "project")
+    || !hasColumn(db, "usage_events", "search_mode")
+    || !sql.includes("'query'")
+    || knowledgeId?.notnull === 1
+    || project?.notnull !== 1;
+
+  if (!needsMigration) {
+    createUsageEventsIndexes(db);
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE usage_events RENAME TO usage_events_legacy;
+    DROP INDEX IF EXISTS idx_usage_events_knowledge;
+    DROP INDEX IF EXISTS idx_usage_events_owner;
+    DROP INDEX IF EXISTS idx_usage_events_request;
+    DROP INDEX IF EXISTS idx_usage_events_created;
+    DROP INDEX IF EXISTS idx_usage_events_project;
+    DROP INDEX IF EXISTS idx_usage_events_event_type;
+  `);
+
+  createUsageEventsTable(db);
+
+  db.exec(`
+    INSERT INTO usage_events (
+      id, knowledge_id, owner, event_type, request_id,
+      query_text, result_count, project, search_mode, query_context, created_at
+    )
+    SELECT
+      legacy.id,
+      legacy.knowledge_id,
+      legacy.owner,
+      legacy.event_type,
+      legacy.request_id,
+      NULL,
+      NULL,
+      COALESCE(knowledge.project, ''),
+      NULL,
+      legacy.query_context,
+      legacy.created_at
+    FROM usage_events_legacy AS legacy
+    LEFT JOIN knowledge ON knowledge.id = legacy.knowledge_id
+  `);
+
+  db.exec("DROP TABLE usage_events_legacy");
+  createUsageEventsIndexes(db);
 }
 
 export function getDb(): Database.Database {
@@ -80,21 +189,6 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
 
-    CREATE TABLE IF NOT EXISTS usage_events (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-      owner         TEXT NOT NULL,
-      event_type    TEXT NOT NULL CHECK (event_type IN ('exposure', 'view')),
-      request_id    TEXT,
-      query_context TEXT,
-      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_usage_events_knowledge ON usage_events(knowledge_id);
-    CREATE INDEX IF NOT EXISTS idx_usage_events_owner ON usage_events(owner);
-    CREATE INDEX IF NOT EXISTS idx_usage_events_request ON usage_events(request_id);
-    CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
-
     CREATE TABLE IF NOT EXISTS reuse_feedback (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
@@ -109,6 +203,7 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_reuse_feedback_created ON reuse_feedback(created_at);
   `);
 
+  ensureUsageEventsSchema(_db);
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_duplicate_of ON knowledge(duplicate_of)");
   ensureColumn(_db, "knowledge", "embedding", "BLOB");
