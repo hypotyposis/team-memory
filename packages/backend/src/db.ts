@@ -79,6 +79,34 @@ export function getDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
+
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+      owner         TEXT NOT NULL,
+      event_type    TEXT NOT NULL CHECK (event_type IN ('exposure', 'view')),
+      request_id    TEXT,
+      query_context TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_knowledge ON usage_events(knowledge_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_owner ON usage_events(owner);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_request ON usage_events(request_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
+
+    CREATE TABLE IF NOT EXISTS reuse_feedback (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+      owner         TEXT NOT NULL,
+      verdict       TEXT NOT NULL CHECK (verdict IN ('useful', 'not_useful', 'outdated')),
+      comment       TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reuse_feedback_knowledge ON reuse_feedback(knowledge_id);
+    CREATE INDEX IF NOT EXISTS idx_reuse_feedback_owner ON reuse_feedback(owner);
+    CREATE INDEX IF NOT EXISTS idx_reuse_feedback_created ON reuse_feedback(created_at);
   `);
 
   ensureColumn(_db, "knowledge", "duplicate_of", "TEXT");

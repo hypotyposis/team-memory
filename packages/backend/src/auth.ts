@@ -34,6 +34,27 @@ export function requireApiAuth(c: Context): ApiAuth | Response {
   return row;
 }
 
+export function getOptionalApiAuth(c: Context): ApiAuth | Response | null {
+  const header = c.req.header("authorization");
+  if (!header) return null;
+
+  const token = extractBearerToken(header);
+  if (!token) {
+    return jsonError(c, 401, "Missing Authorization: Bearer <api_key> header", "auth_missing");
+  }
+
+  const db = getDb();
+  const row = db
+    .prepare("SELECT key, owner FROM api_keys WHERE key = ? AND revoked_at IS NULL")
+    .get(token) as ApiAuth | undefined;
+
+  if (!row) {
+    return jsonError(c, 401, "Invalid API key", "auth_invalid");
+  }
+
+  return row;
+}
+
 export function requireOwnerAccess(c: Context, itemOwner: string): ApiAuth | Response {
   const auth = requireApiAuth(c);
   if (auth instanceof Response) return auth;
