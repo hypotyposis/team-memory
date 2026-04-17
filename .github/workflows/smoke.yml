@@ -1,0 +1,98 @@
+name: Anonymous Pull Smoke
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_run:
+    workflows: [Docker]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:latest
+
+    steps:
+      - name: Ensure anonymous (no registry auth)
+        run: docker logout ghcr.io || true
+
+      - name: Anonymous pull
+        run: docker pull --platform linux/amd64 "$IMAGE"
+
+      - name: Boot + /health
+        run: |
+          docker run -d --platform linux/amd64 --name tm-smoke -p 3456:3456 "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3456/health > /dev/null; then
+              echo "Health check OK"
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "Health check failed after 30s"
+              docker logs tm-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          BODY=$(curl -s http://127.0.0.1:3456/health)
+          echo "Response: $BODY"
+          if [ "$BODY" != '{"status":"ok"}' ]; then
+            echo "Unexpected health body"
+            docker logs tm-smoke
+            exit 1
+          fi
+          docker logs tm-smoke
+          docker stop tm-smoke
+          docker rm tm-smoke
+
+      - name: File regression issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          TRIGGER: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const title = 'deploy/smoke: anonymous pull or /health failed';
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'deploy-smoke',
+              per_page: 5,
+            });
+            const body = [
+              `Anonymous-pull smoke failed.`,
+              ``,
+              `- Trigger: \`${process.env.TRIGGER}\``,
+              `- Run: ${process.env.RUN_URL}`,
+              `- Image: \`${process.env.IMAGE || 'ghcr.io/' + context.repo.owner + '/' + context.repo.repo + ':latest'}\``,
+              ``,
+              `Possible causes: GHCR visibility reverted, image broken on latest main, registry/CDN regression, or /health endpoint regression.`,
+            ].join('\n');
+            if (existing.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['deploy-smoke'],
+              });
+            }
