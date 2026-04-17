@@ -127,7 +127,7 @@ server.tool(
 // --- Tool 5: get_knowledge ---
 server.tool(
   "get_knowledge",
-  "Get the full content of a single knowledge item by ID. Use this after query_knowledge or semantic_search to read the complete detail — opening an item records a first-class `view` event for reuse tracking. Always pass `query_context` with the task or question that prompted the view so the view row ties back to the same intent that drove the preceding query; this is what lets the reuse report attribute views to queries and compute feedback coverage per (owner, item) pair.",
+  "Get the full content of a single knowledge item by ID. Use this after query_knowledge or semantic_search to read the complete detail — opening an item records a first-class `view` event for reuse tracking. Always pass `query_context` with the task or question that prompted the view so the view row ties back to the original query intent; this is how the reuse report attributes views to the search that triggered them.",
   {
     id: z.string().describe("The knowledge item UUID"),
     query_context: z.string().optional().describe("What task or question prompted this view. Strongly recommended when the view follows a query_knowledge or semantic_search call — pass the same question text so reports can tie the view back to the original search intent."),
@@ -161,7 +161,7 @@ server.tool(
 // --- Tool 6: reuse_feedback ---
 server.tool(
   "reuse_feedback",
-  "Report whether a knowledge item was actually useful after using it. Call this after get_knowledge once you know whether the content helped. Verdict: 'useful' (it answered my question or saved work), 'not_useful' (irrelevant or wrong), 'outdated' (used to be true but no longer applies). Feedback is stored as a first-class record (separate from view events) keyed on (owner, knowledge_id) — repeated feedback on the same item by the same agent updates the existing row, so `feedback_coverage` in the reuse report measures 'of the (owner, item) pairs that were actually viewed, how many carry feedback'.",
+  "Report whether a knowledge item was actually useful after using it. Call this after get_knowledge once you know whether the content helped. Verdict: 'useful' (it answered my question or saved work), 'not_useful' (irrelevant or wrong), 'outdated' (used to be true but no longer applies). Feedback is stored as an independent first-class record (separate from view events); each call inserts a new row. The reuse report computes `feedback_coverage` at aggregation time by deduplicating to distinct (owner, knowledge_id) pairs — so the metric measures 'of viewed (owner, item) pairs, how many carry any feedback' and stays bounded at 1.0 even if you submit feedback on the same item multiple times.",
   {
     knowledge_id: z.string().describe("The knowledge item UUID you are giving feedback on"),
     verdict: z.enum(["useful", "not_useful", "outdated"]).describe("useful = it helped / saved me work; not_useful = irrelevant or wrong; outdated = used to be true but no longer applies"),
