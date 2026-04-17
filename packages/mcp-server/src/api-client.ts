@@ -139,6 +139,13 @@ export interface EndTaskResponse {
   error?: EndTaskPartialError;
 }
 
+export function isEndTaskPartialFailure(parsed: unknown): parsed is EndTaskResponse {
+  if (!parsed || typeof parsed !== "object") return false;
+  const err = (parsed as { error?: unknown }).error;
+  if (!err || typeof err !== "object") return false;
+  return typeof (err as { failed_index?: unknown }).failed_index === "number";
+}
+
 export class ApiClient {
   private baseUrl: string;
   private apiKey?: string;
@@ -307,6 +314,11 @@ export class ApiClient {
     // Surface that body to the caller instead of throwing so the MCP handler
     // can render partial success richly. 404 / 403 / 409 use a bare error
     // payload and still throw.
+    //
+    // Discriminator is semantic, not shape-based: partial-failure is the only
+    // shape that carries `error.failed_index` per the locked contract, so we
+    // detect it directly rather than inferring from `task_id/status/published_ids`
+    // presence (which could collide if a future hard-error path echoes task_id).
     if (!res.ok) {
       let parsed: unknown = null;
       try {
@@ -314,13 +326,7 @@ export class ApiClient {
       } catch {
         // fall through to raw-text throw below
       }
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "task_id" in parsed &&
-        "status" in parsed &&
-        "published_ids" in parsed
-      ) {
+      if (isEndTaskPartialFailure(parsed)) {
         return parsed as EndTaskResponse;
       }
       const text =
