@@ -4,20 +4,39 @@ This document defines how agents should interact with Team Memory in their daily
 
 ## How Team Memory Measures Reuse
 
-Every interaction with a knowledge item is recorded so we can tell whether the system is actually saving work. The model uses four terms — learn these names, they show up in tool descriptions, reports, and the dashboard.
+Every interaction with a knowledge item is recorded so we can tell whether the system is actually saving work. The model has **four first-class tracked interactions** — learn these names, they show up in tool descriptions, reports, and the dashboard.
 
 | Term | How it's produced | What it means |
 |------|-------------------|---------------|
-| **query** | You call `query_knowledge` or `semantic_search`. Derived, not stored directly — counted as `COUNT(DISTINCT request_id)` over exposure rows | You asked the team's memory a question |
-| **exposure** | An `exposure` row is written for each item returned in your search results | The item was offered to you but you may not have opened it |
-| **view** | A `view` row is written when you call `get_knowledge` on an item | You opened the full detail — a weak reuse signal |
-| **feedback** | A row is written in the `reuse_feedback` table when you call the `reuse_feedback` tool | You explicitly told the system whether the item helped — the strong reuse signal |
+| **query** | You call `query_knowledge` or `semantic_search`. Each call writes one `usage_events` row with `event_type='query'`, the raw `query_text`, the `result_count`, the `project`, and a `search_mode` (`fts` / `semantic` / `hybrid`) | You asked the team's memory a question — including 0-hit searches and searches whose embedding generation failed |
+| **exposure** | One `usage_events` row with `event_type='exposure'` is written for each item returned in your search results, sharing the same `request_id` as its parent `query` row | The item was offered to you but you may not have opened it |
+| **view** | A `usage_events` row with `event_type='view'` is written when you call `get_knowledge` on an item | You opened the full detail — a weak reuse signal |
+| **feedback** | A row is written in the dedicated `reuse_feedback` table when you call the `reuse_feedback` tool | You explicitly told the system whether the item helped — the strong reuse signal |
 
-Only `exposure`, `view`, and `feedback` are persisted as first-class rows in P0. `query` is derived from shared `request_id`s across exposure rows, so **0-hit searches are not counted in P0** — that's why the reports do not yet include a `hit_rate` metric.
+In P0.1, `query` is a first-class row in `usage_events` (alongside `exposure` and `view`); `feedback` is a separate first-class table. So the schema persists **3 event types in `usage_events` plus 1 first-class `reuse_feedback` record** — please do not call this "four event types", it implies feedback is in the `event_type` enum.
+
+This is a reversal of the earlier P0 design that derived `query` from `COUNT(DISTINCT request_id)` over `exposure` rows. The reversal makes 0-hit and failed-embedding searches observable, which is why the reuse report now exposes `total_queries` and `hit_rate`.
 
 Reports prioritize `view` + `feedback` over `exposure` for the real reuse metrics (north star, top reused). Exposure is tracked for search-effectiveness analysis only.
 
 **Practical takeaway:** every `get_knowledge` should be followed by a `reuse_feedback` once you know whether it helped. Without feedback, the team only sees weak signals.
+
+### What the reuse report exposes
+
+`GET /api/reports/reuse` returns the team-wide reuse snapshot. The fields you'll see today:
+
+| Field | Meaning |
+|-------|---------|
+| `total_queries` | Count of `query` rows. Includes 0-hit and failed-embedding queries |
+| `hit_rate` | `queries_with_result / total_queries`. `0` when there are no queries |
+| `total_views` | Count of `view` rows |
+| `total_items` | Total knowledge rows in the table |
+| `never_accessed` | Items with **no** `exposure`, `view`, or `feedback` (P0 original semantic — kept stable on purpose, not silently redefined) |
+| `never_accessed_pct` | `never_accessed.length / total_items` |
+| `north_star_count` | Items used by ≥ 2 distinct owners via `view` or `useful` feedback |
+| `north_star_pct` | `north_star_count / total_items` |
+| `north_star` | **Deprecated** — back-compat alias for `north_star_pct`. New code should read `north_star_pct` (and/or `north_star_count`); this field will be removed in a future release |
+| `top_reused` | Top 10 items by `view_count + useful_feedback_count`, with per-owner uniqueness tiebreaker |
 
 ## Core Workflow
 
