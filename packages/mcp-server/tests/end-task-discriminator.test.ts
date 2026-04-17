@@ -9,7 +9,7 @@ test("isEndTaskPartialFailure: recognizes partial-failure envelope", () => {
     published_ids: ["k-1"],
     duration_ms: 42,
     error: {
-      code: "publish_failed",
+      code: "task_publish_failed",
       failed_index: 1,
       publish_status: 400,
       publish_error: "claim must be non-empty",
@@ -65,7 +65,7 @@ test("ApiClient.endTask: partial-failure non-2xx returns EndTaskResponse", async
     published_ids: ["k-1"],
     duration_ms: 42,
     error: {
-      code: "publish_failed",
+      code: "task_publish_failed",
       failed_index: 1,
       publish_status: 400,
       publish_error: "bad",
