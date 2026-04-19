@@ -15,6 +15,18 @@ interface TableColumnInfo {
   name: string;
 }
 
+interface ApiKeyRow {
+  id: string | null;
+  key: string;
+  owner: string;
+  default_projects: string | null;
+  description: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
 interface UsageEventRow {
   id: number;
   knowledge_id: string | null;
@@ -42,6 +54,7 @@ interface ReuseFeedbackRow {
 
 let getDb: () => Database.Database;
 let closeDb: () => void;
+let assertSchemaUpToDate: (db: Database.Database, table: string, columns: string[]) => void;
 
 function tableColumns(db: Database.Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as TableColumnInfo[]).map((column) => column.name);
@@ -69,9 +82,12 @@ function resetDbFile(): void {
 }
 
 before(async () => {
-  const dbModule = await import("../src/db.ts");
+  const dbModule = await import("../src/db.ts") as typeof import("../src/db.ts") & {
+    assertSchemaUpToDate?: (db: Database.Database, table: string, columns: string[]) => void;
+  };
   getDb = dbModule.getDb;
   closeDb = dbModule.closeDb;
+  assertSchemaUpToDate = dbModule.assertSchemaUpToDate!;
 });
 
 afterEach(() => {
@@ -236,4 +252,77 @@ test("migrates legacy usage and feedback tables without losing rows", () => {
   assert.equal(feedbackRows[0]!.verdict, "useful");
   assert.equal(feedbackRows[0]!.comment, "Still relevant after migration.");
   assert.equal(feedbackRows[0]!.task_id, null);
+});
+
+test("migrates legacy api_keys schema before creating A5 indexes", () => {
+  const legacyDb = new Database(dbPath);
+  legacyDb.pragma("foreign_keys = ON");
+
+  legacyDb.exec(`
+    CREATE TABLE api_keys (
+      key         TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      revoked_at  TEXT,
+      default_projects TEXT
+    );
+  `);
+
+  legacyDb.prepare(
+    `INSERT INTO api_keys (key, owner, created_at, revoked_at, default_projects)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    "tm_legacy_key",
+    "LegacyOwner",
+    "2026-04-17T00:00:00.000Z",
+    null,
+    JSON.stringify(["hackathon"]),
+  );
+
+  legacyDb.close();
+
+  const db = getDb();
+  const columns = tableColumns(db, "api_keys");
+  assert.ok(columns.includes("id"));
+  assert.ok(columns.includes("description"));
+  assert.ok(columns.includes("expires_at"));
+  assert.ok(columns.includes("last_used_at"));
+  assert.ok(indexExists(db, "idx_api_keys_id"));
+  assert.ok(indexExists(db, "idx_api_keys_expires_at"));
+
+  const row = db.prepare(
+    `SELECT id, key, owner, default_projects, description, expires_at, last_used_at, created_at, revoked_at
+     FROM api_keys
+     WHERE key = ?`,
+  ).get("tm_legacy_key") as ApiKeyRow | undefined;
+
+  assert.ok(row);
+  assert.equal(row!.owner, "LegacyOwner");
+  assert.equal(row!.default_projects, JSON.stringify(["hackathon"]));
+  assert.equal(row!.description, null);
+  assert.equal(row!.expires_at, null);
+  assert.equal(row!.last_used_at, null);
+  assert.match(row!.id ?? "", /^key_[0-9a-f]{16}$/);
+});
+
+test("assertSchemaUpToDate rejects stale api_keys schema before migration", () => {
+  const legacyDb = new Database(dbPath);
+  legacyDb.pragma("foreign_keys = ON");
+
+  legacyDb.exec(`
+    CREATE TABLE api_keys (
+      key         TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      revoked_at  TEXT,
+      default_projects TEXT
+    );
+  `);
+
+  assert.throws(
+    () => assertSchemaUpToDate(legacyDb, "api_keys", ["key", "id", "default_projects", "expires_at"]),
+    /api_keys.*id.*expires_at|id.*expires_at.*api_keys/,
+  );
+
+  legacyDb.close();
 });

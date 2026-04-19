@@ -21,6 +21,19 @@ function hasColumn(db: Database.Database, table: string, column: string): boolea
   return rows.some((row) => row.name === column);
 }
 
+export function assertSchemaUpToDate(
+  db: Database.Database,
+  table: string,
+  requiredColumns: string[],
+): void {
+  const missing = requiredColumns.filter((column) => !hasColumn(db, table, column));
+  if (missing.length > 0) {
+    throw new Error(
+      `Schema mismatch for ${table}: missing columns ${missing.join(", ")}`,
+    );
+  }
+}
+
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string): void {
   if (!hasColumn(db, table, column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -193,10 +206,8 @@ export function getDb(): Database.Database {
       revoked_at  TEXT
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner);
     CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);
 
     CREATE TABLE IF NOT EXISTS tasks (
       task_id      TEXT PRIMARY KEY,
@@ -247,9 +258,10 @@ export function getDb(): Database.Database {
   ensureColumn(_db, "api_keys", "description", "TEXT");
   ensureColumn(_db, "api_keys", "expires_at", "TEXT");
   ensureColumn(_db, "api_keys", "last_used_at", "TEXT");
+  _db.exec("UPDATE api_keys SET id = 'key_' || printf('%016x', rowid) WHERE id IS NULL OR id = ''");
+  assertSchemaUpToDate(_db, "api_keys", ["key", "id", "default_projects", "expires_at"]);
   _db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id)");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at)");
-  _db.exec("UPDATE api_keys SET id = 'key_' || printf('%016x', rowid) WHERE id IS NULL OR id = ''");
   ensureColumn(_db, "reuse_feedback", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_reuse_feedback_task_id ON reuse_feedback(task_id)");
   cleanupFalsePositiveDuplicateOf(_db);
