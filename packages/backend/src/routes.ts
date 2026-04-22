@@ -34,6 +34,7 @@ interface SemanticKnowledgeRow extends KnowledgeRow {
 type SearchMode = "fts" | "semantic" | "hybrid";
 type ReuseVerdict = "useful" | "not_useful" | "outdated";
 type TaskStatus = "open" | "completed" | "abandoned";
+type AuditEventType = "publish" | "update" | "supersede" | "delete";
 
 interface TaskRow {
   task_id: string;
@@ -43,6 +44,17 @@ interface TaskRow {
   status: TaskStatus;
   opened_at: string;
   closed_at: string | null;
+}
+
+interface AuditEventRow {
+  id: number;
+  event_type: AuditEventType;
+  knowledge_id: string;
+  owner: string;
+  project: string | null;
+  actor_key_id: string | null;
+  changed_fields: string | null;
+  created_at: string;
 }
 
 interface PublishKnowledgeInput {
@@ -78,6 +90,11 @@ interface PublishKnowledgeFailure {
 }
 
 type PublishKnowledgeResult = PublishKnowledgeSuccess | PublishKnowledgeFailure;
+
+interface PublishKnowledgeOptions {
+  taskId?: string;
+  actorKeyId?: string | null;
+}
 
 interface TrackedSearchItem {
   id: string;
@@ -122,6 +139,26 @@ function summaryFromRow(row: KnowledgeRow) {
     duplicate_of: row.duplicate_of, created_at: row.created_at,
     ...qualityFlagsFromRow(row),
   };
+}
+
+function auditEventToJson(row: AuditEventRow) {
+  return {
+    id: row.id,
+    event_type: row.event_type,
+    knowledge_id: row.knowledge_id,
+    owner: row.owner,
+    project: row.project,
+    actor_key_id: row.actor_key_id,
+    changed_fields: row.changed_fields ? JSON.parse(row.changed_fields) : null,
+    created_at: row.created_at,
+  };
+}
+
+function parseSinceDuration(value: string): string | null {
+  const match = /^(\d+)d$/.exec(value.trim());
+  if (!match) return null;
+  const days = Number.parseInt(match[1]!, 10);
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
 function parseTagList(tags: string | null | undefined): string[] | undefined {
@@ -176,6 +213,33 @@ function compareSearchResults(left: SearchResultItem & { hybrid_score: number },
     return modePriority[right.search_mode] - modePriority[left.search_mode];
   }
   return Date.parse(right.created_at) - Date.parse(left.created_at);
+}
+
+function recordAuditEvent(
+  db: ReturnType<typeof getDb>,
+  input: {
+    eventType: AuditEventType;
+    knowledgeId: string;
+    owner: string;
+    project: string | null;
+    actorKeyId?: string | null;
+    changedFields?: string[] | null;
+    createdAt?: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO audit_events (
+      event_type, knowledge_id, owner, project, actor_key_id, changed_fields, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.eventType,
+    input.knowledgeId,
+    input.owner,
+    input.project,
+    input.actorKeyId ?? null,
+    input.changedFields ? JSON.stringify(input.changedFields) : null,
+    input.createdAt ?? new Date().toISOString(),
+  );
 }
 
 async function runSemanticCandidates(
@@ -531,7 +595,7 @@ async function publishKnowledgeItem(
   db: ReturnType<typeof getDb>,
   owner: string,
   body: PublishKnowledgeInput,
-  taskId?: string,
+  options: PublishKnowledgeOptions = {},
 ): Promise<PublishKnowledgeResult> {
   const missing: string[] = [];
   for (const field of ["claim", "source", "project", "tags", "confidence", "staleness_hint"] as const) {
@@ -573,13 +637,19 @@ async function publishKnowledgeItem(
     embedding,
   });
   const duplicateOf = findPersistedDuplicateOf(claim, project, duplicates);
+  let supersededProject: string | null = null;
 
   if (supersedes) {
-    const old = db.prepare("SELECT id, superseded_by FROM knowledge WHERE id = ?").get(supersedes) as { id: string; superseded_by: string | null } | undefined;
+    const old = db.prepare("SELECT id, project, superseded_by FROM knowledge WHERE id = ?").get(supersedes) as {
+      id: string;
+      project: string;
+      superseded_by: string | null;
+    } | undefined;
     if (!old) return { ok: false, status: 400, error: `Superseded item not found: ${supersedes}` };
     if (old.superseded_by) {
       return { ok: false, status: 400, error: `Item ${supersedes} is already superseded by ${old.superseded_by}` };
     }
+    supersededProject = old.project;
   }
 
   if (relatedTo && Array.isArray(relatedTo)) {
@@ -624,8 +694,26 @@ async function publishKnowledgeItem(
     if (supersedes) {
       updateSuperseded.run(id, supersedes);
     }
-    if (taskId) {
-      linkTaskPublication.run(taskId, id, now);
+    if (options.taskId) {
+      linkTaskPublication.run(options.taskId, id, now);
+    }
+    recordAuditEvent(db, {
+      eventType: "publish",
+      knowledgeId: id,
+      owner,
+      project,
+      actorKeyId: options.actorKeyId ?? null,
+      createdAt: now,
+    });
+    if (supersedes) {
+      recordAuditEvent(db, {
+        eventType: "supersede",
+        knowledgeId: supersedes,
+        owner,
+        project: supersededProject,
+        actorKeyId: options.actorKeyId ?? null,
+        createdAt: now,
+      });
     }
   })();
 
@@ -810,6 +898,89 @@ api.delete("/admin/keys/:id", (c) => {
   return new Response(null, { status: 204 });
 });
 
+api.get("/admin/audit-log", (c) => {
+  const adminAuth = requireAdminAuth(c);
+  if (adminAuth instanceof Response) return adminAuth;
+
+  const owner = c.req.query("owner");
+  const project = c.req.query("project");
+  const eventType = c.req.query("event_type");
+  const knowledgeId = c.req.query("knowledge_id");
+  const since = c.req.query("since");
+  const limitRaw = c.req.query("limit");
+  const offsetRaw = c.req.query("offset");
+
+  if (eventType && !["publish", "update", "supersede", "delete"].includes(eventType)) {
+    return c.json({ error: "event_type must be one of: publish, update, supersede, delete" }, 400);
+  }
+
+  let sinceCutoff: string | null = null;
+  if (since) {
+    sinceCutoff = parseSinceDuration(since);
+    if (!sinceCutoff) {
+      return c.json({ error: "since must be in Nd format, for example 7d or 30d" }, 400);
+    }
+  }
+
+  let limit = 100;
+  if (limitRaw !== undefined) {
+    const parsed = Number.parseInt(limitRaw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return c.json({ error: "limit must be a positive integer" }, 400);
+    }
+    limit = Math.min(parsed, 500);
+  }
+
+  let offset = 0;
+  if (offsetRaw !== undefined) {
+    const parsed = Number.parseInt(offsetRaw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return c.json({ error: "offset must be a non-negative integer" }, 400);
+    }
+    offset = parsed;
+  }
+
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (owner) {
+    conditions.push("owner = ?");
+    params.push(owner);
+  }
+  if (project) {
+    conditions.push("project = ?");
+    params.push(project);
+  }
+  if (eventType) {
+    conditions.push("event_type = ?");
+    params.push(eventType);
+  }
+  if (knowledgeId) {
+    conditions.push("knowledge_id = ?");
+    params.push(knowledgeId);
+  }
+  if (sinceCutoff) {
+    conditions.push("created_at >= ?");
+    params.push(sinceCutoff);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const countRow = db.prepare(`SELECT COUNT(*) AS cnt FROM audit_events ${whereClause}`).get(...params) as { cnt: number };
+  const rows = db.prepare(
+    `SELECT id, event_type, knowledge_id, owner, project, actor_key_id, changed_fields, created_at
+     FROM audit_events
+     ${whereClause}
+     ORDER BY created_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).all(...params, limit, offset) as AuditEventRow[];
+
+  return c.json({
+    items: rows.map(auditEventToJson),
+    total: countRow.cnt,
+  });
+});
+
 // 1. POST /api/knowledge
 api.post("/knowledge", async (c) => {
   const auth = requireApiAuth(c);
@@ -817,7 +988,9 @@ api.post("/knowledge", async (c) => {
 
   const db = getDb();
   const body = await c.req.json() as PublishKnowledgeInput;
-  const result = await publishKnowledgeItem(db, auth.owner, body);
+  const result = await publishKnowledgeItem(db, auth.owner, body, {
+    actorKeyId: auth.id,
+  });
   if (!result.ok) {
     return c.json({ error: result.error }, result.status as 400);
   }
@@ -930,7 +1103,10 @@ api.post("/tasks/:task_id/end", async (c) => {
   const findings = (body.findings as PublishKnowledgeInput[] | undefined) ?? [];
 
   for (let index = 0; index < findings.length; index += 1) {
-    const result = await publishKnowledgeItem(db, auth.owner, findings[index]!, task.task_id);
+    const result = await publishKnowledgeItem(db, auth.owner, findings[index]!, {
+      taskId: task.task_id,
+      actorKeyId: auth.id,
+    });
     if (!result.ok) {
       return c.json({
         task_id: task.task_id,
@@ -1439,14 +1615,47 @@ api.patch("/knowledge/:id", async (c) => {
   if (attempted.length > 0) return c.json({ error: `Cannot modify immutable fields: ${attempted.join(", ")}` }, 400);
   const updates: string[] = [];
   const params: (string | number)[] = [];
-  if (body.tags !== undefined) { if (!Array.isArray(body.tags)) return c.json({ error: "tags must be an array" }, 400); updates.push("tags = ?"); params.push(JSON.stringify(body.tags)); }
-  if (body.confidence !== undefined) { if (!VALID_CONFIDENCE.has(body.confidence)) return c.json({ error: "confidence must be one of: high, medium, low" }, 400); updates.push("confidence = ?"); params.push(body.confidence); }
-  if (body.staleness_hint !== undefined) { updates.push("staleness_hint = ?"); params.push(body.staleness_hint); }
-  if (body.related_to !== undefined) { if (!Array.isArray(body.related_to)) return c.json({ error: "related_to must be an array" }, 400); updates.push("related_to = ?"); params.push(JSON.stringify(body.related_to)); }
+  const changedFields: string[] = [];
+  if (body.tags !== undefined) {
+    if (!Array.isArray(body.tags)) return c.json({ error: "tags must be an array" }, 400);
+    const serializedTags = JSON.stringify(body.tags);
+    updates.push("tags = ?");
+    params.push(serializedTags);
+    if (serializedTags !== row.tags) changedFields.push("tags");
+  }
+  if (body.confidence !== undefined) {
+    if (!VALID_CONFIDENCE.has(body.confidence)) return c.json({ error: "confidence must be one of: high, medium, low" }, 400);
+    updates.push("confidence = ?");
+    params.push(body.confidence);
+    if (body.confidence !== row.confidence) changedFields.push("confidence");
+  }
+  if (body.staleness_hint !== undefined) {
+    updates.push("staleness_hint = ?");
+    params.push(body.staleness_hint);
+    if (body.staleness_hint !== row.staleness_hint) changedFields.push("staleness_hint");
+  }
+  if (body.related_to !== undefined) {
+    if (!Array.isArray(body.related_to)) return c.json({ error: "related_to must be an array" }, 400);
+    const serializedRelatedTo = JSON.stringify(body.related_to);
+    updates.push("related_to = ?");
+    params.push(serializedRelatedTo);
+    if (serializedRelatedTo !== row.related_to) changedFields.push("related_to");
+  }
   if (updates.length === 0) return c.json({ error: "No valid fields to update" }, 400);
   const now = new Date().toISOString();
   updates.push("updated_at = ?"); params.push(now); params.push(id);
-  db.prepare(`UPDATE knowledge SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+  db.transaction(() => {
+    db.prepare(`UPDATE knowledge SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+    recordAuditEvent(db, {
+      eventType: "update",
+      knowledgeId: id,
+      owner: auth.owner,
+      project: row.project,
+      actorKeyId: auth.id,
+      changedFields,
+      createdAt: now,
+    });
+  })();
   const updated = db.prepare("SELECT * FROM knowledge WHERE id = ?").get(id) as KnowledgeRow;
   return c.json(rowToJson(updated));
 });

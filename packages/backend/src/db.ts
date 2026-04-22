@@ -77,6 +77,27 @@ function createUsageEventsIndexes(db: Database.Database): void {
   `);
 }
 
+function createAuditEventsTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type      TEXT NOT NULL CHECK (event_type IN ('publish', 'update', 'supersede', 'delete')),
+      knowledge_id    TEXT NOT NULL,
+      owner           TEXT NOT NULL,
+      project         TEXT,
+      actor_key_id    TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
+      changed_fields  TEXT,
+      created_at      TEXT NOT NULL
+    );
+  `);
+}
+
+function createAuditEventsIndexes(db: Database.Database): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at);
+  `);
+}
+
 function ensureUsageEventsSchema(db: Database.Database): void {
   createUsageEventsTable(db);
 
@@ -262,6 +283,8 @@ export function getDb(): Database.Database {
   assertSchemaUpToDate(_db, "api_keys", ["key", "id", "default_projects", "expires_at"]);
   _db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id)");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at)");
+  createAuditEventsTable(_db);
+  createAuditEventsIndexes(_db);
   ensureColumn(_db, "reuse_feedback", "task_id", "TEXT REFERENCES tasks(task_id) ON DELETE SET NULL");
   _db.exec("CREATE INDEX IF NOT EXISTS idx_reuse_feedback_task_id ON reuse_feedback(task_id)");
   cleanupFalsePositiveDuplicateOf(_db);

@@ -3,6 +3,7 @@ import { getDb } from "./db.js";
 import { parseStoredProjects } from "./api-keys.js";
 
 export interface ApiAuth {
+  id: string | null;
   key: string;
   owner: string;
   defaultProjects: string[] | null;
@@ -47,6 +48,7 @@ function lookupApiAuth(token: string): ApiAuth | undefined {
   }
 
   return {
+    id: row.id,
     key: row.key,
     owner: row.owner,
     defaultProjects: parseStoredProjects(row.default_projects),
