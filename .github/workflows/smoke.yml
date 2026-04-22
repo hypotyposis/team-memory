@@ -46,11 +46,7 @@ jobs:
           done
           BODY=$(curl -s http://127.0.0.1:3456/health)
           echo "Response: $BODY"
-          if [ "$BODY" != '{"status":"ok"}' ]; then
-            echo "Unexpected health body"
-            docker logs tm-smoke
-            exit 1
-          fi
+          echo "$BODY" | node -e "process.stdin.on('data',d=>{const j=JSON.parse(d);if(j.status!=='ok'){console.error('Unexpected health status');process.exit(1)}})"
           docker logs tm-smoke
           docker stop tm-smoke
           docker rm tm-smoke

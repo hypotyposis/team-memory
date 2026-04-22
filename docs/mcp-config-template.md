@@ -27,7 +27,7 @@ docker run -d \
 Then verify:
 
 ```bash
-curl http://localhost:3456/health   # → {"status":"ok"}
+curl http://localhost:3456/health   # → {"status":"ok","primitive_batch":null}
 ```
 
 Point your MCP config's `TEAM_MEMORY_URL` at `http://localhost:3456` exactly as in the snippets above — only the backend runtime changed, the MCP server still runs locally from your cloned repo.
@@ -48,8 +48,9 @@ The compose file defines a named volume `team-memory-data` mounted at `/data`, s
 
 | Tag | Meaning |
 |-----|---------|
-| `:latest` | Latest successful build on `main` |
-| `:sha-<commit>` | Immutable build for a specific `main` commit — pin this for pilot teams who need reproducibility |
+| `:latest` | Latest primitive-batch release — only advances when a `primitive-batch-N` tag is pushed, not on every commit |
+| `:batch-N` | Immutable tag for a specific primitive batch (e.g., `:batch-1`) |
+| `:sha-<commit>` | Immutable build for a specific `main` commit — published on every push to `main` |
 
 Only `linux/amd64` is published in the initial release. ARM builds and Kubernetes manifests are deliberately out of scope; add later if adoption warrants.
 
