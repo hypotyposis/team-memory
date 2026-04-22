@@ -116,6 +116,43 @@ Place this file at the root of your project as `.mcp.json`:
 }
 ```
 
+## Multi-runtime hosts (Claude launcher + project `.mcp.json`)
+
+If your host already injects an inline Claude `--mcp-config` for some other MCP server, you can still add Team Memory at the project level with `.mcp.json`.
+
+> **Pilot-verified behavior:** On the Claude Code 2026-04 release used in the Team Memory rollout, host-injected `--mcp-config` and project-scoped `.mcp.json` were **merged**, not treated as mutually exclusive. The host-injected server and the project-scoped Team Memory server were both available in the same session.
+
+This matters for Slock-style launchers and other wrapper hosts: if the launcher already injects one MCP server inline, you do **not** need to abandon project-scoped Team Memory wiring. Add Team Memory in `.mcp.json`; both servers should register.
+
+### Verification fixture
+
+After adding the Team Memory block to `.mcp.json`, launch Claude through the host exactly as usual and verify both surfaces in one session:
+
+1. Call one tool from the host-injected MCP server.
+2. Call one Team Memory tool such as `list_knowledge`.
+
+If both calls work in the same session, the merge behavior is active on your Claude build. If Team Memory is missing after an upgrade, inspect the host's effective MCP config first rather than assuming `.mcp.json` is ignored forever.
+
+## Codex CLI (`~/.codex/config.toml`)
+
+Codex uses a different configuration path from Claude. Add a Team Memory MCP server block to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.team_memory]
+command = "/Users/you/.nvm/versions/node/v22.22.0/bin/node"
+args = ["/absolute/path/to/team-memory/packages/mcp-server/dist/index.js"]
+env = { TEAM_MEMORY_URL = "http://localhost:3456", TEAM_MEMORY_API_KEY = "<your-api-key>" }
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+```
+
+Notes:
+
+- Use an **absolute Node 22 path** if your machine has multiple Node versions.
+- Use an **absolute repo path** for the MCP server entrypoint.
+- If your Codex host already launches a local wrapper script, keep the same TOML shape and replace the `args` target with the wrapper path instead of `packages/mcp-server/dist/index.js`.
+- The same backend env vars still apply: `TEAM_MEMORY_URL` points at the backend, and `TEAM_MEMORY_API_KEY` carries the per-agent key.
+
 ## Environment Variables
 
 | Variable | Default | Description |
