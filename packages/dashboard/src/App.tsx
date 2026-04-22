@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { KnowledgeItem, KnowledgeListItem, ReuseReport, ReuseSince } from "./types";
+import type { KnowledgeItem, KnowledgeListItem, ReuseReport, ReuseSince, AuditEvent, AuditEventType } from "./types";
 import {
   listKnowledge,
   searchKnowledge,
@@ -8,10 +8,11 @@ import {
   getApiKey,
   setApiKey,
   getReuseReport,
+  getAuditLog,
 } from "./api";
 import "./App.css";
 
-type View = "knowledge" | "reuse";
+type View = "knowledge" | "reuse" | "audit";
 
 function App() {
   const [items, setItems] = useState<KnowledgeListItem[]>([]);
@@ -99,6 +100,12 @@ function App() {
           >
             Reuse
           </button>
+          <button
+            className={`view-tab ${view === "audit" ? "active" : ""}`}
+            onClick={() => setView("audit")}
+          >
+            Audit Log
+          </button>
         </nav>
         {view === "knowledge" && (
           <span className="stats">
@@ -147,7 +154,13 @@ function App() {
         </div>
       )}
 
-      {view === "reuse" ? (
+      {view === "audit" ? (
+        <AuditView
+          projects={projects}
+          owners={owners}
+          onNavigate={(id) => { setView("knowledge"); selectItem(id); }}
+        />
+      ) : view === "reuse" ? (
         <ReuseView
           projects={projects}
           onNavigate={(id) => { setView("knowledge"); selectItem(id); }}
@@ -698,6 +711,195 @@ function ReuseView({
       )}
     </div>
   );
+}
+
+const AUDIT_EVENT_TYPES: AuditEventType[] = ["publish", "update", "supersede", "delete"];
+const PAGE_SIZE = 50;
+
+function AuditView({
+  projects,
+  owners,
+  onNavigate,
+}: {
+  projects: string[];
+  owners: string[];
+  onNavigate: (id: string) => void;
+}) {
+  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [eventType, setEventType] = useState<AuditEventType | "">("");
+  const [ownerFilter, setOwnerFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [since, setSince] = useState("7d");
+  const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    setPage(0);
+  }, [eventType, ownerFilter, projectFilter, since]);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    getAuditLog({
+      event_type: eventType || undefined,
+      owner: ownerFilter || undefined,
+      project: projectFilter || undefined,
+      since: since || undefined,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    })
+      .then((r) => {
+        setEvents(r.items);
+        setTotal(r.total);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setEvents([]);
+        setTotal(0);
+        setLoading(false);
+      });
+  }, [eventType, ownerFilter, projectFilter, since, page]);
+
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  return (
+    <div className="audit-view">
+      <section className="reuse-toolbar">
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">Event</span>
+          <select
+            className="reuse-select"
+            value={eventType}
+            onChange={(e) => setEventType(e.target.value as AuditEventType | "")}
+          >
+            <option value="">All</option>
+            {AUDIT_EVENT_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">Owner</span>
+          <select
+            className="reuse-select"
+            value={ownerFilter}
+            onChange={(e) => setOwnerFilter(e.target.value)}
+          >
+            <option value="">All</option>
+            {owners.map((o) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">Project</span>
+          <select
+            className="reuse-select"
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+          >
+            <option value="">All</option>
+            {projects.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </div>
+        <div className="reuse-toolbar-group">
+          <span className="reuse-toolbar-label">Since</span>
+          <div className="reuse-toggle">
+            {["7d", "30d", ""].map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                className={`reuse-toggle-btn ${since === opt ? "active" : ""}`}
+                onClick={() => setSince(opt)}
+              >
+                {opt === "7d" ? "7 days" : opt === "30d" ? "30 days" : "All"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="reuse-toolbar-spacer" />
+        <span className="reuse-toolbar-status">
+          {loading ? "Loading..." : `${total} event${total !== 1 ? "s" : ""}`}
+        </span>
+      </section>
+
+      {error ? (
+        <div className="reuse-error">
+          <div className="title">Failed to load audit log</div>
+          <div>{error.includes("404") ? "Admin key required — set it via the key button above" : error}</div>
+        </div>
+      ) : events.length === 0 && !loading ? (
+        <div className="reuse-empty">No audit events found.</div>
+      ) : (
+        <>
+          <div className="audit-table">
+            <div className="audit-table-head">
+              <span className="audit-col-time">Time</span>
+              <span className="audit-col-type">Event</span>
+              <span className="audit-col-owner">Owner</span>
+              <span className="audit-col-project">Project</span>
+              <span className="audit-col-id">Knowledge ID</span>
+              <span className="audit-col-changes">Changes</span>
+            </div>
+            {events.map((evt) => (
+              <div
+                key={evt.id}
+                className="audit-row"
+                onClick={() => onNavigate(evt.knowledge_id)}
+              >
+                <span className="audit-col-time">{formatDateTime(evt.created_at)}</span>
+                <span className="audit-col-type">
+                  <span className={`audit-event-badge ${evt.event_type}`}>{evt.event_type}</span>
+                </span>
+                <span className="audit-col-owner">{evt.owner}</span>
+                <span className="audit-col-project">{evt.project ?? "—"}</span>
+                <span className="audit-col-id audit-knowledge-id">{evt.knowledge_id}</span>
+                <span className="audit-col-changes">
+                  {evt.changed_fields ? Object.keys(evt.changed_fields).join(", ") : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+          {totalPages > 1 && (
+            <div className="audit-pagination">
+              <button
+                disabled={page === 0}
+                onClick={() => setPage(page - 1)}
+              >
+                Prev
+              </button>
+              <span className="audit-page-info">
+                Page {page + 1} of {totalPages}
+              </span>
+              <button
+                disabled={page >= totalPages - 1}
+                onClick={() => setPage(page + 1)}
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 function MetricCard({

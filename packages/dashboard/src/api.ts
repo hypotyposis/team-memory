@@ -3,6 +3,8 @@ import type {
   KnowledgeListItem,
   ReuseReport,
   ReuseReportParams,
+  AuditLogParams,
+  AuditLogResponse,
 } from "./types";
 import { mockKnowledge, mockReuseReport } from "./mockData";
 
@@ -203,6 +205,20 @@ export async function getReuseReport(params: ReuseReportParams = {}): Promise<Re
   if (params.min_age_days !== undefined) {
     url.searchParams.set("min_age_days", String(params.min_age_days));
   }
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function getAuditLog(params: AuditLogParams = {}): Promise<AuditLogResponse> {
+  const url = new URL(`${API_BASE}/admin/audit-log`);
+  if (params.owner) url.searchParams.set("owner", params.owner);
+  if (params.project) url.searchParams.set("project", params.project);
+  if (params.event_type) url.searchParams.set("event_type", params.event_type);
+  if (params.knowledge_id) url.searchParams.set("knowledge_id", params.knowledge_id);
+  if (params.since) url.searchParams.set("since", params.since);
+  if (params.limit !== undefined) url.searchParams.set("limit", String(params.limit));
+  if (params.offset !== undefined) url.searchParams.set("offset", String(params.offset));
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
