@@ -26,33 +26,50 @@ const KEYS = resolve(DEPLOY_DIR, "per-lane-keys.json");
 
 const UUID_RE = /\/\.slock\/agents\/([0-9a-f-]{36})(?:\/|$)/;
 
-let resolved = "anonymous: no UUID in CWD";
+let lane = null;
+let mode = "anonymous";
+let reason = null;
+let keyPrefix = null;
 
 const uuidMatch = process.cwd().match(UUID_RE);
-if (uuidMatch && !process.env.TEAM_MEMORY_API_KEY) {
+if (process.env.TEAM_MEMORY_API_KEY) {
+  mode = "explicit";
+  keyPrefix = process.env.TEAM_MEMORY_API_KEY.slice(0, 8);
+} else if (!uuidMatch) {
+  reason = "no-uuid-in-cwd";
+} else {
   const uuid = uuidMatch[1];
   try {
     const mapping = JSON.parse(readFileSync(UUID_MAP, "utf8"));
     const keys = JSON.parse(readFileSync(KEYS, "utf8"));
-    const lane = mapping[uuid];
-    if (lane && keys[lane]) {
+    lane = mapping[uuid] ?? null;
+    if (!lane) {
+      reason = "uuid-not-in-mapping";
+    } else if (!keys[lane]) {
+      reason = "lane-has-no-key";
+    } else {
       process.env.TEAM_MEMORY_API_KEY = keys[lane];
       process.env.TEAM_MEMORY_WRAPPER_OWNER = lane;
-      resolved = `lane: ${lane}`;
-    } else if (!lane) {
-      resolved = `anonymous: UUID ${uuid} not in mapping`;
-    } else {
-      resolved = `anonymous: lane ${lane} has no key`;
+      mode = "keyed";
+      keyPrefix = keys[lane].slice(0, 8);
     }
   } catch (err) {
-    resolved = `anonymous: ${err.code || err.message}`;
+    reason = err.code || err.message;
   }
-} else if (process.env.TEAM_MEMORY_API_KEY) {
-  resolved = "explicit: TEAM_MEMORY_API_KEY already set";
 }
 
-if (process.env.TM_WRAPPER_DEBUG) {
-  process.stderr.write(`[tm-wrapper] ${resolved}\n`);
+if (mode === "keyed") {
+  process.stderr.write(
+    `[tm-mcp-wrapper] lane=${lane} mode=keyed key=${keyPrefix}...\n`,
+  );
+} else if (mode === "explicit") {
+  process.stderr.write(
+    `[tm-mcp-wrapper] mode=explicit key=${keyPrefix}...\n`,
+  );
+} else {
+  process.stderr.write(
+    `[tm-mcp-wrapper] lane=${lane ?? "<unresolved>"} mode=anonymous reason=${reason}\n`,
+  );
 }
 
 createRequire(import.meta.url)(MCP_ENTRY);

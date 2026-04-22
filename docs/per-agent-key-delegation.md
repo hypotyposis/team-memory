@@ -89,44 +89,36 @@ If any step in the resolution chain fails, the wrapper falls through to **anonym
 
 Anonymous mode preserves unauthenticated read functionality (`query_knowledge`, `semantic_search`, `list_knowledge`, `get_knowledge`). Operations that require auth — all writes (`publish_knowledge`, `update_knowledge`, `reuse_feedback`) and task sessions (`start_task`, `end_task`) — will fail with 401. This is the correct signal that key provisioning is incomplete.
 
-**Logging requirement:** The wrapper should log its resolution outcome at startup. See [T2-B #69](https://github.com/hypotyposis/team-memory/issues/69) for the startup-log spec (lane resolved / anonymous-mode reason).
+### Startup logging
+
+The wrapper **must** log its resolution outcome to stderr at startup. This is always-on, not gated behind a debug flag — silent fall-through caused delayed diagnosis in the pilot (discovered via missing `By:` attribution, not via logs).
+
+**Log format:**
+
+```
+[tm-mcp-wrapper] lane=@dev-1 mode=keyed key=tm_abc12...
+```
+
+On fall-through:
+
+```
+[tm-mcp-wrapper] lane=<unresolved> mode=anonymous reason=no-uuid-in-cwd
+[tm-mcp-wrapper] lane=<unresolved> mode=anonymous reason=uuid-not-in-mapping
+[tm-mcp-wrapper] lane=@dev-1 mode=anonymous reason=lane-has-no-key
+[tm-mcp-wrapper] lane=<unresolved> mode=anonymous reason=ENOENT
+```
+
+On explicit key (pre-set in env):
+
+```
+[tm-mcp-wrapper] mode=explicit key=tm_def45...
+```
+
+The `key=` field shows the first 8 characters only — enough to identify which key without leaking the full secret. The `reason=` field on anonymous mode maps directly to the resolution chain failure point.
 
 ## Reference implementation
 
-The pilot wrapper lives at the repo root as `examples/tm-mcp-wrapper.mjs`:
-
-```javascript
-#!/usr/bin/env node
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-
-const DEPLOY_DIR = process.env.TM_DEPLOY_DIR || ".";
-const MCP_ENTRY = process.env.TM_MCP_ENTRY
-  || `${DEPLOY_DIR}/packages/mcp-server/dist/index.js`;
-const UUID_MAP = `${DEPLOY_DIR}/agent-uuid-to-lane.json`;
-const KEYS = `${DEPLOY_DIR}/per-lane-keys.json`;
-
-const uuidMatch = process.cwd().match(
-  /\/\.slock\/agents\/([0-9a-f-]{36})(?:\/|$)/
-);
-
-if (uuidMatch) {
-  const uuid = uuidMatch[1];
-  try {
-    const mapping = JSON.parse(readFileSync(UUID_MAP, "utf8"));
-    const keys = JSON.parse(readFileSync(KEYS, "utf8"));
-    const lane = mapping[uuid];
-    if (lane && keys[lane] && !process.env.TEAM_MEMORY_API_KEY) {
-      process.env.TEAM_MEMORY_API_KEY = keys[lane];
-      process.env.TEAM_MEMORY_WRAPPER_OWNER = lane;
-    }
-  } catch {
-    // Fall-through → anonymous MCP
-  }
-}
-
-createRequire(import.meta.url)(MCP_ENTRY);
-```
+The reference implementation lives at `examples/tm-mcp-wrapper.mjs`. See the file directly for the full source — it implements the resolution chain, fall-through behavior, and startup logging described in this spec.
 
 ### MCP config using the wrapper
 
