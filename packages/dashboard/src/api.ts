@@ -13,6 +13,7 @@ const USE_MOCK = false;
 const USE_REUSE_MOCK = false;
 
 let _apiKey: string | null = localStorage.getItem("tm_api_key");
+let _adminKey: string | null = localStorage.getItem("tm_admin_key");
 
 export function setApiKey(key: string | null) {
   _apiKey = key;
@@ -27,9 +28,29 @@ export function getApiKey(): string | null {
   return _apiKey;
 }
 
+export function setAdminKey(key: string | null) {
+  _adminKey = key;
+  if (key) {
+    localStorage.setItem("tm_admin_key", key);
+  } else {
+    localStorage.removeItem("tm_admin_key");
+  }
+}
+
+export function getAdminKey(): string | null {
+  return _adminKey;
+}
+
 export function authHeaders(): Record<string, string> {
   if (_apiKey) {
     return { Authorization: `Bearer ${_apiKey}` };
+  }
+  return {};
+}
+
+function adminAuthHeaders(): Record<string, string> {
+  if (_adminKey) {
+    return { Authorization: `Bearer ${_adminKey}` };
   }
   return {};
 }
@@ -219,7 +240,7 @@ export async function getAuditLog(params: AuditLogParams = {}): Promise<AuditLog
   if (params.since) url.searchParams.set("since", params.since);
   if (params.limit !== undefined) url.searchParams.set("limit", String(params.limit));
   if (params.offset !== undefined) url.searchParams.set("offset", String(params.offset));
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await fetch(url, { headers: adminAuthHeaders() });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }

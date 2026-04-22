@@ -7,6 +7,8 @@ import {
   getAllFilters,
   getApiKey,
   setApiKey,
+  getAdminKey,
+  setAdminKey,
   getReuseReport,
   getAuditLog,
 } from "./api";
@@ -29,6 +31,7 @@ function App() {
   const [searchMode, setSearchMode] = useState<"fts" | "semantic" | "hybrid" | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey() ?? "");
+  const [adminKeyInput, setAdminKeyInput] = useState(getAdminKey() ?? "");
   const [view, setView] = useState<View>("knowledge");
 
   useEffect(() => {
@@ -117,7 +120,7 @@ function App() {
           onClick={() => setShowSettings(!showSettings)}
           title="API Key Settings"
         >
-          {getApiKey() ? "🔑" : "⚙"}
+          {getApiKey() || getAdminKey() ? "🔑" : "⚙"}
         </button>
       </header>
 
@@ -129,22 +132,34 @@ function App() {
               type="password"
               value={apiKeyInput}
               onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder="Enter API key for write operations"
+              placeholder="Bearer token for read endpoints"
+            />
+          </label>
+          <label>
+            Admin Key:
+            <input
+              type="password"
+              value={adminKeyInput}
+              onChange={(e) => setAdminKeyInput(e.target.value)}
+              placeholder="Admin key for audit log"
             />
           </label>
           <button
             onClick={() => {
               setApiKey(apiKeyInput || null);
+              setAdminKey(adminKeyInput || null);
               setShowSettings(false);
             }}
           >
             Save
           </button>
-          {getApiKey() && (
+          {(getApiKey() || getAdminKey()) && (
             <button
               onClick={() => {
                 setApiKey(null);
                 setApiKeyInput("");
+                setAdminKey(null);
+                setAdminKeyInput("");
                 setShowSettings(false);
               }}
             >
