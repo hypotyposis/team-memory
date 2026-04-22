@@ -11,7 +11,7 @@ app.use("*", logger());
 app.get("/health", (c) =>
   c.json({
     status: "ok",
-    primitive_batch: process.env.PRIMITIVE_BATCH ?? null,
+    primitive_batch: process.env.PRIMITIVE_BATCH || null,
   }),
 );
 app.route("/api", api);
