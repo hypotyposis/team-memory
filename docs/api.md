@@ -199,8 +199,13 @@ Returns service liveness. No auth.
 **Response — 200**
 
 ```json
-{ "status": "ok" }
+{ "status": "ok", "primitive_batch": "1" }
 ```
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `"ok"` | Always `"ok"` on a healthy instance. |
+| `primitive_batch` | `string \| null` | The primitive-batch tag this build was published from. `null` for local dev or untagged builds. Use this to detect backend/MCP API skew. |
 
 ---
 

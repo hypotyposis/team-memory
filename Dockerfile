@@ -30,9 +30,11 @@ RUN groupadd --system --gid 1001 teammemory \
   && mkdir -p /data \
   && chown -R teammemory:teammemory /data
 
+ARG PRIMITIVE_BATCH
 ENV NODE_ENV=production
 ENV PORT=3456
 ENV TEAM_MEMORY_DB=/data/team-memory.db
+ENV PRIMITIVE_BATCH=${PRIMITIVE_BATCH}
 
 COPY --from=build --chown=teammemory:teammemory /app/node_modules ./node_modules
 COPY --from=build --chown=teammemory:teammemory /app/packages/backend/dist ./packages/backend/dist
