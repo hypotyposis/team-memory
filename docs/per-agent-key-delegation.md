@@ -87,7 +87,7 @@ If any step in the resolution chain fails, the wrapper falls through to **anonym
 | Mapping file missing or unreadable | No key injected → anonymous MCP |
 | `TEAM_MEMORY_API_KEY` already set | Existing key preserved (no override) |
 
-Anonymous mode preserves full read functionality. Writes that require auth will fail with 401 — this is the correct signal that key provisioning is incomplete.
+Anonymous mode preserves unauthenticated read functionality (`query_knowledge`, `semantic_search`, `list_knowledge`, `get_knowledge`). Operations that require auth — all writes (`publish_knowledge`, `update_knowledge`, `reuse_feedback`) and task sessions (`start_task`, `end_task`) — will fail with 401. This is the correct signal that key provisioning is incomplete.
 
 **Logging requirement:** The wrapper should log its resolution outcome at startup. See [T2-B #69](https://github.com/hypotyposis/team-memory/issues/69) for the startup-log spec (lane resolved / anonymous-mode reason).
 
@@ -164,7 +164,8 @@ TM_DEPLOY_DIR = "/path/to/deploy"
 Before the wrapper can delegate, each agent needs a key in the backend:
 
 ```bash
-# Via CLI (direct DB access)
+# Via CLI (direct DB access, from packages/backend)
+cd packages/backend
 npm run keys -- create "@dev-1" --projects my-team
 
 # Via admin API (remote)
