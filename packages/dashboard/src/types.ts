@@ -82,3 +82,31 @@ export interface ReuseReportParams {
   project?: string;
   min_age_days?: number;
 }
+
+export type AuditEventType = "publish" | "update" | "supersede" | "delete";
+
+export interface AuditEvent {
+  id: number;
+  event_type: AuditEventType;
+  knowledge_id: string;
+  owner: string;
+  project: string | null;
+  actor_key_id: string | null;
+  changed_fields: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AuditLogParams {
+  owner?: string;
+  project?: string;
+  event_type?: AuditEventType;
+  knowledge_id?: string;
+  since?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditLogResponse {
+  items: AuditEvent[];
+  total: number;
+}
