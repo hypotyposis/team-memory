@@ -54,7 +54,7 @@ packages/backend         REST API + SQLite + FTS5 + provider-agnostic semantic s
 | `packages/mcp-server` | MCP tools that proxy agent calls to the backend (see [MCP Tools](#mcp-tools) below) |
 | `packages/dashboard` | Read-only dashboard for browsing, filtering, and inspecting knowledge items; includes a Reuse tab for team reuse metrics |
 | `e2e/scripts` | Demo and smoke scripts that validate publish -> query -> get -> feedback flows |
-| `docs/` | Agent behavior protocol, MCP config template, API reference (`docs/api.md`) |
+| `docs/` | Quickstart, agent behavior protocol, MCP config template, API reference (`docs/api.md`) |
 | `CONTRIBUTING.md` | GitHub workflow, branch naming, review expectations |
 
 ## Core Concept: Knowledge Items
@@ -120,6 +120,10 @@ See [`docs/api.md`](docs/api.md) for the full request/response reference, query 
 
 ## Quick Start
 
+For a 5-minute Docker first run, start with [`docs/quickstart.md`](docs/quickstart.md). It covers `docker compose up`, `/health`, key minting, publishing the first knowledge item, and searching it back.
+
+The rest of this section is the source-checkout development path.
+
 ### Prerequisites
 
 - **Node.js 22** (pinned in `.nvmrc`). Run `nvm use` to switch automatically.
@@ -167,6 +171,16 @@ npm run keys --workspace=packages/backend -- create <owner> --projects alpha,bet
 
 The `create` and `update-key` subcommands require an explicit scope flag — pass `--projects <names>` to scope the key, or `--unscoped` to mint a key with no project restriction. Running without either flag fails loud rather than silently minting an unscoped key.
 
+Capture one key for the curl examples below. Use the same `TEAM_MEMORY_DB` value that the backend process uses:
+
+```bash
+export TEAM_MEMORY_API_KEY="$(
+  TEAM_MEMORY_DB=/absolute/path/to/team-memory.db \
+  npm run keys --workspace=packages/backend -- create quickstart-agent --projects infer-monorepo \
+    | awk -F= '/^key=/{print $2}'
+)"
+```
+
 ### 2. Start the MCP server
 
 Point it at the same backend URL. If you customized `PORT`, update `TEAM_MEMORY_URL` to match:
@@ -205,6 +219,7 @@ The backend port, MCP URL, and dashboard API base must stay aligned.
 
 ```bash
 curl -X POST http://localhost:3460/api/knowledge \
+  -H "Authorization: Bearer $TEAM_MEMORY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "claim": "Infer monorepo uses dual deploy modes: control and inference",
@@ -213,15 +228,15 @@ curl -X POST http://localhost:3460/api/knowledge \
     "module": "core/deploy",
     "tags": ["architecture", "deploy-mode"],
     "confidence": "high",
-    "staleness_hint": "Recheck if DEPLOY_MODE logic changes",
-    "owner": "Jet"
+    "staleness_hint": "Recheck if DEPLOY_MODE logic changes"
   }'
 ```
 
 ### 5. Query it back
 
 ```bash
-curl "http://localhost:3460/api/knowledge/search?q=deploy&project=infer-monorepo"
+curl "http://localhost:3460/api/knowledge/search?q=deploy&project=infer-monorepo" \
+  -H "Authorization: Bearer $TEAM_MEMORY_API_KEY"
 ```
 
 ## How To Use It

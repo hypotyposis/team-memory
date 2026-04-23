@@ -10,6 +10,7 @@ services:
     environment:
       PORT: 3456
       TEAM_MEMORY_DB: /data/team-memory.db
+      TEAM_MEMORY_ADMIN_KEY: ${TEAM_MEMORY_ADMIN_KEY:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:-https://api.openai.com/v1}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
