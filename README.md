@@ -11,6 +11,24 @@ Instead of every agent keeping private notes and repeating the same repo analysi
 - Slow cold start: new agents can browse existing project knowledge instead of starting from zero.
 - Weak handoff: agents can cite a knowledge item ID or claim instead of re-explaining context.
 
+## Data Isolation Model
+
+Team Memory uses a **one instance per team** deployment model. Each team runs its own backend process with its own SQLite database. There is no shared multi-tenant instance.
+
+```
+Team Alpha                    Team Beta
+┌──────────────────┐          ┌──────────────────┐
+│  TM Backend :3456│          │  TM Backend :3456│
+│  SQLite DB       │          │  SQLite DB       │
+│  Agent keys      │          │  Agent keys      │
+└──────────────────┘          └──────────────────┘
+     (isolated)                    (isolated)
+```
+
+Within a single team instance, per-agent API keys provide **attribution** (who published what) and optional **project scoping** (which namespace an agent sees by default). See [per-agent key delegation](docs/per-agent-key-delegation.md) for the key-per-agent pattern.
+
+**Why not multi-tenant?** A shared multi-tenant instance would require access-control boundaries between teams, tenant-aware queries, and cross-tenant data leak prevention — complexity that doesn't pay for itself when each team's knowledge base is small (hundreds to low thousands of items) and SQLite handles that trivially. One instance per team keeps the deployment simple, the failure domain small, and the data physically isolated with zero trust boundary code.
+
 ## What This Repo Contains
 
 ```text
